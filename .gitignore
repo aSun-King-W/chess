@@ -1,0 +1,8 @@
+.DS_Store
+node_modules
+dist
+.test-dist
+.vite
+.tools
+*.tsbuildinfo
+*.local
