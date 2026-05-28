@@ -67,7 +67,7 @@ import {
   stepSecondsForMove,
   undoLastRound,
 } from './game';
-import type { EndReason, GameResult, GameState, Move, Piece, Position, Side } from './game';
+import type { EndReason, GameResult, GameState, Move, Piece, PieceKind, Position, Side } from './game';
 import {
   applyJieqiMove,
   createInitialJieqiPieces,
@@ -116,6 +116,20 @@ import rankedIcon from './assets/mode-icons/ranked.png';
 import recentIcon from './assets/mode-icons/recent.png';
 import xiangqiIcon from './assets/mode-icons/xiangqi.png';
 import bronzeRankEmblem from './assets/ranked/rank-emblem-bronze.png';
+import blackChePiece from './assets/pieces/generated/black-che.png';
+import blackJiangPiece from './assets/pieces/generated/black-jiang.png';
+import blackMaPiece from './assets/pieces/generated/black-ma.png';
+import blackPaoPiece from './assets/pieces/generated/black-pao.png';
+import blackShiPiece from './assets/pieces/generated/black-shi.png';
+import blackXiangPiece from './assets/pieces/generated/black-xiang.png';
+import blackZuPiece from './assets/pieces/generated/black-zu.png';
+import redBingPiece from './assets/pieces/generated/red-bing.png';
+import redChePiece from './assets/pieces/generated/red-che.png';
+import redMaPiece from './assets/pieces/generated/red-ma.png';
+import redPaoPiece from './assets/pieces/generated/red-pao.png';
+import redShiPiece from './assets/pieces/generated/red-shi.png';
+import redShuaiPiece from './assets/pieces/generated/red-shuai.png';
+import redXiangPiece from './assets/pieces/generated/red-xiang.png';
 
 type Route = 'home' | 'lobby' | 'jieqi' | 'puzzle' | 'more-game' | 'game' | 'result' | 'replay' | 'profile';
 type Mode = 'xiangqi' | 'jieqi' | 'puzzle' | 'more' | 'ranked';
@@ -151,6 +165,7 @@ type MatchingState = {
   mode: MatchMode;
   label: string;
 };
+type PieceImageMap = Record<Side, Record<PieceKind, string>>;
 type LobbyMode = {
   id: MatchMode;
   label: string;
@@ -196,6 +211,26 @@ type RankedArenaOption = {
   bonus?: string;
 };
 const BOARD_PADDING_PERCENT = 7;
+const generatedPieceImages: PieceImageMap = {
+  black: {
+    rook: blackChePiece,
+    horse: blackMaPiece,
+    elephant: blackXiangPiece,
+    advisor: blackShiPiece,
+    king: blackJiangPiece,
+    cannon: blackPaoPiece,
+    pawn: blackZuPiece,
+  },
+  red: {
+    rook: redChePiece,
+    horse: redMaPiece,
+    elephant: redXiangPiece,
+    advisor: redShiPiece,
+    king: redShuaiPiece,
+    cannon: redPaoPiece,
+    pawn: redBingPiece,
+  },
+};
 const xiangqiRulesSections: RuleSection[] = [
   {
     title: '天天象棋棋规',
@@ -3164,7 +3199,10 @@ function ChessBoard({
   return (
     <div className={`chess-board ${compact ? 'is-compact' : ''}`} onClick={handleBoardClick}>
       <canvas ref={canvasRef} aria-hidden="true" />
-      <div className="board-river">楚河　　汉界</div>
+      <div className="board-river">
+        <span>楚河</span>
+        <span>汉界</span>
+      </div>
       {recentMove && (
         <>
           <span className="recent-ring" style={pointStyle(recentMove.from)} />
@@ -3174,22 +3212,34 @@ function ChessBoard({
       {marks.map((mark) => (
         <span className="move-mark" key={`${mark.x}-${mark.y}`} style={pointStyle(mark)} />
       ))}
-      {pieces.map((piece) => (
-        <button
-          className={`piece ${piece.side} ${piece.id === selectedPiece ? 'is-selected' : ''}`}
-          key={piece.id}
-          style={pointStyle(piece)}
-          onClick={(event) => {
-            event.stopPropagation();
-            onSelectPoint?.({ x: piece.x, y: piece.y });
-          }}
-          aria-label={`${piece.side === 'red' ? '红方' : '黑方'}${piece.label}`}
-        >
-          {piece.label}
-        </button>
-      ))}
+      {pieces.map((piece) => {
+        const pieceImage = getGeneratedPieceImage(piece);
+        return (
+          <button
+            className={`piece ${piece.side} ${pieceImage ? 'is-image-piece' : ''} ${piece.id === selectedPiece ? 'is-selected' : ''}`}
+            key={piece.id}
+            style={pointStyle(piece)}
+            onClick={(event) => {
+              event.stopPropagation();
+              onSelectPoint?.({ x: piece.x, y: piece.y });
+            }}
+            aria-label={`${piece.side === 'red' ? '红方' : '黑方'}${piece.label}`}
+          >
+            {pieceImage ? (
+              <img className="piece-image" src={pieceImage} alt="" aria-hidden="true" />
+            ) : (
+              piece.label
+            )}
+          </button>
+        );
+      })}
     </div>
   );
+}
+
+function getGeneratedPieceImage(piece: Piece) {
+  if (piece.label === '暗') return null;
+  return generatedPieceImages[piece.side][piece.kind];
 }
 
 function drawBoard(ctx: CanvasRenderingContext2D, width: number, height: number) {
