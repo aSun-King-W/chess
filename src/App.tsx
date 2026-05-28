@@ -218,6 +218,7 @@ import blackPaoPiece from './assets/pieces/generated/black-pao.png';
 import blackShiPiece from './assets/pieces/generated/black-shi.png';
 import blackXiangPiece from './assets/pieces/generated/black-xiang.png';
 import blackZuPiece from './assets/pieces/generated/black-zu.png';
+import jieqiBackPiece from './assets/pieces/generated/jieqi-back.png';
 import redBingPiece from './assets/pieces/generated/red-bing.png';
 import redChePiece from './assets/pieces/generated/red-che.png';
 import redMaPiece from './assets/pieces/generated/red-ma.png';
@@ -5082,7 +5083,7 @@ function ChessBoard({
               event.stopPropagation();
               onSelectPoint?.({ x: piece.x, y: piece.y });
             }}
-            aria-label={`${piece.side === 'red' ? '红方' : '黑方'}${piece.label}`}
+            aria-label={`${piece.side === 'red' ? '红方' : '黑方'}${piece.label || '暗子'}`}
           >
             {pieceImage ? (
               <img className="piece-image" src={pieceImage} alt="" aria-hidden="true" />
@@ -5099,7 +5100,7 @@ function ChessBoard({
 }
 
 function getGeneratedPieceImage(piece: Piece) {
-  if (piece.label === '暗') return null;
+  if (piece.label === '暗' || piece.label === '') return jieqiBackPiece;
   return generatedPieceImages[piece.side][piece.kind];
 }
 
