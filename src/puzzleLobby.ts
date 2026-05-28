@@ -4,6 +4,11 @@ import type { Puzzle, PuzzleSession } from './puzzle.js';
 export type PuzzleFeatureEntryKind =
   | 'daily'
   | 'campaign'
+  | 'scored'
+  | 'challenge'
+  | 'study'
+  | 'coin'
+  | 'hot'
   | 'training'
   | 'theme'
   | 'mistakes'
@@ -197,11 +202,58 @@ export const puzzleFeatureEntries: PuzzleFeatureEntry[] = [
   },
   {
     id: 'campaign',
-    title: '残局闯关',
-    subtitle: '本地关卡路线',
+    title: '残局-闯关',
+    subtitle: '2667',
     kind: 'campaign',
     badge: '进阶',
     trainingSetId: 'campaign-basic',
+    enabled: true,
+    localOnly: true,
+  },
+  {
+    id: 'scored',
+    title: '残局-评分',
+    subtitle: '通过海量残局鉴定实力',
+    kind: 'scored',
+    badge: '0分',
+    trainingSetId: 'daily-puzzle',
+    enabled: true,
+    localOnly: true,
+  },
+  {
+    id: 'challenge',
+    title: '残局-挑战',
+    subtitle: '限时挑战残局玩法',
+    kind: 'challenge',
+    trainingSetId: 'tactics-core',
+    enabled: true,
+    localOnly: true,
+  },
+  {
+    id: 'study',
+    title: '残局-学习',
+    subtitle: '精准分类残局，快速提升',
+    kind: 'study',
+    trainingSetId: 'mate-patterns',
+    enabled: true,
+    localOnly: true,
+  },
+  {
+    id: 'coin',
+    title: '残局-铜钱场',
+    subtitle: '解残局，赢铜钱!',
+    kind: 'coin',
+    trainingSetId: 'campaign-basic',
+    enabled: true,
+    localOnly: true,
+  },
+  {
+    id: 'hot',
+    title: '残局-热门',
+    subtitle: '网络主播推荐',
+    kind: 'hot',
+    badge: '0/282关',
+    trainingSetId: 'tactics-core',
     enabled: true,
     localOnly: true,
   },

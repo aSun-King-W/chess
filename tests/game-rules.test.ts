@@ -17,6 +17,7 @@ import {
   movePiece,
   placeStone,
   startingPieces,
+  stepSecondsForMove,
   undoLastRound,
 } from '../src/game.js';
 import type { Piece, Position } from '../src/game.js';
@@ -233,6 +234,19 @@ const tests: TestCase[] = [
 
       const ended = finishGame({ ...game, redTotal: 590 }, 'black', 'timeout');
       assert(ended.result?.elapsed === 10, 'elapsed should be based on custom initial time');
+    },
+  },
+  {
+    name: '自定义步时会写入开局和常规计时',
+    run: () => {
+      let game = createInitialGame(8 * 60, 60, 90, 3);
+      assert(game.stepLeft === 90, 'fresh custom game should use opening step seconds');
+      assert(game.regularStepSeconds === 60, 'regular step seconds should be stored');
+      assert(stepSecondsForMove(0, game.regularStepSeconds, game.openingStepSeconds, game.openingMoveCount) === 90, 'opening move time');
+      assert(stepSecondsForMove(6, game.regularStepSeconds, game.openingStepSeconds, game.openingMoveCount) === 60, 'regular move time');
+
+      game = applyMove(game, 'rn1', { x: 2, y: 7 });
+      assert(game.stepLeft === 90, 'first reply should still use opening step seconds');
     },
   },
   {

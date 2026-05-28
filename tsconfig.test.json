@@ -15,5 +15,19 @@
     "outDir": ".test-dist",
     "jsx": "react-jsx"
   },
-  "include": ["src/game.ts", "src/jieqi.ts", "src/jieqiLobby.ts", "src/puzzle.ts", "src/puzzleLobby.ts", "src/xiangqiLobby.ts", "tests"]
+  "include": [
+    "src/game.ts",
+    "src/jieqi.ts",
+    "src/jieqiLobby.ts",
+    "src/puzzle.ts",
+    "src/puzzleLobby.ts",
+    "src/xiangqiLobby.ts",
+    "src/xiangqiCertification.ts",
+    "src/xiangqiCoinArena.ts",
+    "src/xiangqiMinuteArena.ts",
+    "src/xiangqiRating.ts",
+    "src/xiangqiHuashan.ts",
+    "src/xiangqiFriendRoom.ts",
+    "tests"
+  ]
 }

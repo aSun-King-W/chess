@@ -45,6 +45,9 @@ export type GameState = {
   blackTotal: number;
   initialTotalSeconds: number;
   stepLeft: number;
+  regularStepSeconds: number;
+  openingStepSeconds: number;
+  openingMoveCount: number;
   paused: boolean;
 };
 
@@ -111,7 +114,12 @@ export const puzzlePieces: Piece[] = [
   { id: 'prk', side: 'red', kind: 'king', label: '帥', x: 4, y: 9 },
 ];
 
-export function createInitialGame(totalSeconds = INITIAL_TOTAL_SECONDS): GameState {
+export function createInitialGame(
+  totalSeconds = INITIAL_TOTAL_SECONDS,
+  regularStepSeconds = INITIAL_STEP_SECONDS,
+  openingStepSeconds = OPENING_STEP_SECONDS,
+  openingMoveCount = 3,
+): GameState {
   return {
     pieces: clonePieces(startingPieces),
     turn: 'red',
@@ -124,7 +132,10 @@ export function createInitialGame(totalSeconds = INITIAL_TOTAL_SECONDS): GameSta
     redTotal: totalSeconds,
     blackTotal: totalSeconds,
     initialTotalSeconds: totalSeconds,
-    stepLeft: stepSecondsForMove(0),
+    stepLeft: stepSecondsForMove(0, regularStepSeconds, openingStepSeconds, openingMoveCount),
+    regularStepSeconds,
+    openingStepSeconds,
+    openingMoveCount,
     paused: false,
   };
 }
@@ -165,7 +176,12 @@ export function applyMove(game: GameState, pieceId: string, to: Position): GameS
     legalMoves: [],
     recentMove: move,
     moveHistory,
-    stepLeft: stepSecondsForMove(moveHistory.length),
+    stepLeft: stepSecondsForMove(
+      moveHistory.length,
+      game.regularStepSeconds,
+      game.openingStepSeconds,
+      game.openingMoveCount,
+    ),
   };
 
   if (capturedKing) return finishGame(nextGame, game.turn, 'captured');
@@ -396,7 +412,12 @@ export function undoLastRound(game: GameState): GameState {
     legalMoves: [],
     recentMove: moveHistory[moveHistory.length - 1] ?? null,
     moveHistory,
-    stepLeft: stepSecondsForMove(moveHistory.length),
+    stepLeft: stepSecondsForMove(
+      moveHistory.length,
+      game.regularStepSeconds,
+      game.openingStepSeconds,
+      game.openingMoveCount,
+    ),
   };
 }
 
@@ -439,8 +460,13 @@ export function clonePieces(pieces: Piece[]): Piece[] {
   return pieces.map((piece) => ({ ...piece }));
 }
 
-export function stepSecondsForMove(moveCount: number): number {
-  return moveCount < 6 ? OPENING_STEP_SECONDS : INITIAL_STEP_SECONDS;
+export function stepSecondsForMove(
+  moveCount: number,
+  regularStepSeconds = INITIAL_STEP_SECONDS,
+  openingStepSeconds = OPENING_STEP_SECONDS,
+  openingMoveCount = 3,
+): number {
+  return moveCount < openingMoveCount * 2 ? openingStepSeconds : regularStepSeconds;
 }
 
 export function createGobangBoard(): number[][] {
