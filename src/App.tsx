@@ -49,29 +49,63 @@ import {
   canUndoRound,
   chooseAiMove,
   chooseGobangMove,
-  clonePieces,
   createGobangBoard,
   createInitialGame,
   findPiece,
   finishGame,
-  getLegalMoves,
+  getDefeatReason,
   getPieceAt,
   gobangSize,
   hasGobangWin,
   hasPoint,
   inBounds,
   isInCheck,
-  movePiece,
   opposite,
   placeStone,
-  puzzlePieces,
   selectPiece,
-  samePoint,
   startingPieces,
   stepSecondsForMove,
   undoLastRound,
 } from './game';
 import type { EndReason, GameResult, GameState, Move, Piece, Position, Side } from './game';
+import {
+  applyJieqiMove,
+  createInitialJieqiPieces,
+  getJieqiLegalMoves,
+  getJieqiPieceAt,
+  toDisplayJieqiPieces,
+} from './jieqi';
+import type { JieqiPiece } from './jieqi';
+import {
+  applyPuzzleMove,
+  createPuzzleSession,
+  dailyPuzzle,
+  getPuzzleLegalMoves,
+  resetPuzzleSession,
+  revealPuzzleHint,
+  tickPuzzleSession,
+} from './puzzle';
+import type { PuzzleSessionStatus } from './puzzle';
+import {
+  getPuzzleDashboardStats,
+  getPuzzleFeatureAction,
+  puzzleFeatureEntries,
+  recordPuzzleAttempt,
+  createPuzzleProgress,
+} from './puzzleLobby';
+import type { PuzzleFeatureEntry, PuzzleProgress } from './puzzleLobby';
+import {
+  getJieqiFeatureAction,
+  getJieqiFeatureEntry,
+  getJieqiRuleCallouts,
+  jieqiFeatureDockItems,
+} from './jieqiLobby';
+import type { JieqiFeatureEntryId } from './jieqiLobby';
+import {
+  getXiangqiFeatureAction,
+  xiangqiFeatureDockItems,
+} from './xiangqiLobby';
+import type { XiangqiFeatureEntryId, XiangqiFeatureAction } from './xiangqiLobby';
 import comingSoonPoster from './assets/more-games/coming-soon.png';
 import flipChessPoster from './assets/more-games/flip-chess.png';
 import gobangPoster from './assets/more-games/gobang.png';
@@ -88,12 +122,24 @@ type Mode = 'xiangqi' | 'jieqi' | 'puzzle' | 'more' | 'ranked';
 type BottomTab = 'play' | 'learn' | 'world' | 'discover' | 'me';
 type MatchMode = 'certification' | 'rating' | 'training' | 'huashan' | 'fast5' | 'standard10' | 'slow20' | 'friend';
 type ConfirmAction = 'resign' | 'exit';
-type PuzzleState = 'ready' | 'solved' | 'failed';
+type PuzzleState = PuzzleSessionStatus;
 type ChatTab = 'emoji' | 'log';
 type SettingKey = 'moveHints' | 'coordinates' | 'captureAnimation' | 'backgroundMusic' | 'sound' | 'messages';
 type GameSettings = Record<SettingKey, boolean>;
 type ToastKind = 'info' | 'success' | 'warning';
 type RankedMenu = 'game' | 'arena' | null;
+type RulesDialogKind = 'xiangqi' | 'jieqi' | 'ranked';
+type RuleSection = { title: string; items: string[] };
+type FeatureDialogState =
+  | { kind: 'xiangqi'; entryId: XiangqiFeatureEntryId }
+  | { kind: 'jieqi'; entryId: JieqiFeatureEntryId }
+  | { kind: 'puzzle'; entryId: string };
+type RankedRankRow = {
+  rank: string;
+  score: string;
+  seasonCarry: string;
+  crossSeasonCarry: string;
+};
 type ToastState = {
   id: number;
   message: string;
@@ -130,10 +176,6 @@ type LobbyEntry = {
   bonus?: string;
   toast?: string;
 };
-type JieqiPiece = Piece & {
-  hidden: boolean;
-  revealed: boolean;
-};
 type FlipPiece = {
   id: string;
   side: Side;
@@ -154,7 +196,184 @@ type RankedArenaOption = {
   bonus?: string;
 };
 const BOARD_PADDING_PERCENT = 7;
-const puzzleHintTarget: Position = { x: 4, y: 0 };
+const xiangqiRulesSections: RuleSection[] = [
+  {
+    title: '天天象棋棋规',
+    items: [
+      '简明易懂的亚洲规则，结合网络对局有所改进，以判和及提示强制变招两大原则。',
+    ],
+  },
+  {
+    title: '一、判和',
+    items: [
+      '双方无进攻子力自动判和。进攻子力指车、马、炮、卒。',
+      '非将、非应将、非捉、非应捉时，局面重复 5 次自动判和。',
+      '双方互相长将 6 次判和。',
+      '双方互相长捉对方一子 6 次判和。',
+      '双方无吃子着数达到 120 步（60 回合）自动判和。双方各自最多只累计 10 次将军；若一方最后一步形成绝杀或困毙局面，不判和。',
+      '总步数达到 400 步（200 回合）自动判和；若一方最后一步形成绝杀或困毙局面，不判和。',
+    ],
+  },
+  {
+    title: '二、提示强制变招',
+    items: [
+      '一方一子或多子长捉一子只允许 6 回合。',
+      '一方长将，一方长捉，长将方禁招。',
+      '一方一子长将只允许 6 回合，两子只允许 12 回合，三子及以上只允许 18 回合；当将军过程中任何一方吃子后重新计算。',
+      '一方一子连续将或捉交替进行只允许 12 回合，一子以上连续将或捉交替进行只允许 18 回合。',
+    ],
+  },
+  {
+    title: '棋力评测',
+    items: [
+      '国家公认的评测系统，每次会匹配水平接近的人对局。',
+      '初始分为 -160。同等级胜 +10、平 +0、负 -10；低一等级胜 +15、平 +0、负 -5。',
+      '等级路径：学1 → 学3 → 业1 → 业9。',
+    ],
+  },
+  {
+    title: '5/10/20 分钟场积分与头衔',
+    items: [
+      '不同积分对应相应等级称号，获得更多积分可以升到更高等级。点开个人资料可以查看积分和等级称号对应关系。',
+      '积分采用 ELO 计算：积分低者赢积分高者时获得更多分数。',
+      '出现和局时，先手玩家被扣分。',
+      '匹配成功后，该棋局视为有效对局，逃跑会被扣除相应积分。',
+    ],
+  },
+  {
+    title: '华山论剑',
+    items: [
+      '华山论剑分为过关赛和山顶赛。过关赛通过 20 关的玩家，才有资格参与每晚 8 点的山顶赛。',
+      '山顶赛开赛前 5 分钟上华山者即可参赛；开赛前 5 分钟之后上华山者安排第二天比赛。',
+      '比赛结束后，所有获得参赛资格的玩家统一降到第 15 关。',
+      '点开华山论剑顶部的“去观赛”按钮可查看详细规程及奖励。',
+    ],
+  },
+  {
+    title: '棋社',
+    items: [
+      '创建棋社成为社长，邀请好友加入棋社，一起下棋或组织线上比赛。',
+      '也可以加入其他棋社，和广大棋友一起切磋棋艺。',
+      '关于用棋社开展线上比赛的功能，可以进入棋社私人房的“棋社动态”查看。',
+    ],
+  },
+  {
+    title: '好友对战',
+    items: [
+      '方法一：进入对应的棋种（象棋、揭棋、翻翻棋），点击“好友对战”，选择对局时长，点击邀请好友，可以看到您关注的棋友，可向 ta 发起约战邀请。也可点击下方“QQ 好友或微信好友”按钮，发送 QQ 好友或微信好友链接，对方收到信息即可加入对局。',
+      '方法二：可以和好友约定在某一个棋社，告诉他棋社号和桌号即可进入棋社开战。',
+    ],
+  },
+];
+
+const jieqiRulesSections: RuleSection[] = [
+  {
+    title: '一、明子暗子说明',
+    items: ['反盖棋子不见字体的是暗子；揭开后可见字体的是明子。'],
+  },
+  {
+    title: '二、摆子规则',
+    items: ['红黑双方各 15 个暗子随机摆放在自己一边，将、帅放在原点。'],
+  },
+  {
+    title: '三、暗子走子规则',
+    items: [
+      '对局时红方首先走子，暗子按其所在位置照中国象棋规则走出第一步。例如在兵位置上的第一步只能向前走一步。',
+      '如果行动范围内有对方棋子，可以吃掉对方棋子，走子后的暗子会自动翻开为明子。',
+      '己方暗子被吃后，自己不能看到暗子是什么棋；明子被吃则可见。',
+    ],
+  },
+  {
+    title: '四、明子走子规则',
+    items: [
+      '明子照中国象棋规则走子。',
+      '揭开后的士、象可以过河。',
+    ],
+  },
+  {
+    title: '五、棋规',
+    items: [
+      '长捉：不能连续捉对方同一棋子超过 6 回合，6 回合后禁着。',
+      '长将：同一棋子不能连续捉对方帅、将超过 6 回合，6 回合后禁着。',
+      '空步判和：双方无吃子步数达到 40 回合，判和。',
+      '局面累计重复 5 次自动判和。',
+    ],
+  },
+  {
+    title: '六、胜负判断',
+    items: [
+      '被绝杀或者困毙判负。',
+      '超时、强退、认输判负。',
+    ],
+  },
+  {
+    title: '七、其他规则',
+    items: ['认输、求和：7 回合后轮到自己下棋时才能操作。'],
+  },
+];
+
+const rankedRulesSections: RuleSection[] = [
+  {
+    title: '一、玩法规则',
+    items: [
+      '排位赛玩法包括象棋铜钱场和揭棋铜钱场，每场对局结算铜钱与段位积分。',
+      '段位积分结算 = 底分 + 胜局场次加成。底分：象棋场和揭棋场均为 100 分。',
+      '胜局场次加成：高倍场胜局额外加成的积分比例越高。',
+      '特殊规则：若对局双方存在段位等级差，则在段位积分结算基础上，低段位获胜多加 5 分，高段位获胜少加 5 分。',
+    ],
+  },
+  {
+    title: '二、赛季规则',
+    items: [
+      '赛季周期：每个赛季持续 2 个月，结束后自动开启新赛季。',
+      '赛季升级：每场对局进行段位积分结算，累计段位积分可提升段位星数和等级。',
+      '赛季奖励：赛季结束时，将按照本赛季达到过的最高段位发放奖励至邮件。',
+      '赛季继承：每赛季开始时将继承上赛季的部分段位及星数，具体见段位表。',
+    ],
+  },
+];
+
+const rankedRankRows: RankedRankRow[] = [
+  { rank: '青铜1星', score: '100', seasonCarry: '青铜1星', crossSeasonCarry: '青铜1星' },
+  { rank: '青铜2星', score: '200', seasonCarry: '青铜2星', crossSeasonCarry: '青铜2星' },
+  { rank: '青铜3星', score: '300', seasonCarry: '青铜3星', crossSeasonCarry: '青铜3星' },
+  { rank: '白银1星', score: '500', seasonCarry: '白银1星', crossSeasonCarry: '白银1星' },
+  { rank: '白银2星', score: '700', seasonCarry: '白银1星', crossSeasonCarry: '白银1星' },
+  { rank: '白银3星', score: '1000', seasonCarry: '白银2星', crossSeasonCarry: '白银1星' },
+  { rank: '黄金1星', score: '1400', seasonCarry: '白银2星', crossSeasonCarry: '白银1星' },
+  { rank: '黄金2星', score: '1800', seasonCarry: '白银3星', crossSeasonCarry: '白银1星' },
+  { rank: '黄金3星', score: '2200', seasonCarry: '黄金1星', crossSeasonCarry: '白银1星' },
+  { rank: '黄金4星', score: '2600', seasonCarry: '黄金2星', crossSeasonCarry: '白银2星' },
+  { rank: '铂金1星', score: '3000', seasonCarry: '黄金3星', crossSeasonCarry: '白银2星' },
+  { rank: '铂金2星', score: '3500', seasonCarry: '黄金3星', crossSeasonCarry: '白银2星' },
+  { rank: '铂金3星', score: '4000', seasonCarry: '黄金4星', crossSeasonCarry: '白银3星' },
+  { rank: '铂金4星', score: '4500', seasonCarry: '黄金4星', crossSeasonCarry: '白银3星' },
+  { rank: '钻石1星', score: '5000', seasonCarry: '铂金1星', crossSeasonCarry: '黄金1星' },
+  { rank: '钻石2星', score: '6000', seasonCarry: '铂金1星', crossSeasonCarry: '黄金1星' },
+  { rank: '钻石3星', score: '7000', seasonCarry: '铂金2星', crossSeasonCarry: '黄金1星' },
+  { rank: '钻石4星', score: '8000', seasonCarry: '铂金3星', crossSeasonCarry: '黄金2星' },
+  { rank: '钻石5星', score: '9000', seasonCarry: '铂金4星', crossSeasonCarry: '黄金2星' },
+  { rank: '荣耀1星', score: '10000', seasonCarry: '钻石1星', crossSeasonCarry: '黄金2星' },
+  { rank: '荣耀2星', score: '12000', seasonCarry: '钻石1星', crossSeasonCarry: '黄金3星' },
+  { rank: '荣耀3星', score: '14000', seasonCarry: '钻石1星', crossSeasonCarry: '黄金3星' },
+  { rank: '荣耀4星', score: '16000', seasonCarry: '钻石2星', crossSeasonCarry: '黄金3星' },
+  { rank: '荣耀5星', score: '20000', seasonCarry: '钻石2星', crossSeasonCarry: '黄金3星' },
+  { rank: '大师1星', score: '25000', seasonCarry: '钻石3星', crossSeasonCarry: '黄金4星' },
+  { rank: '大师2星', score: '30000', seasonCarry: '钻石3星', crossSeasonCarry: '黄金4星' },
+  { rank: '大师3星', score: '35000', seasonCarry: '钻石3星', crossSeasonCarry: '铂金1星' },
+  { rank: '大师4星', score: '40000', seasonCarry: '钻石4星', crossSeasonCarry: '铂金1星' },
+  { rank: '大师5星', score: '45000', seasonCarry: '钻石4星', crossSeasonCarry: '铂金1星' },
+  { rank: '棋王1星', score: '55000', seasonCarry: '钻石5星', crossSeasonCarry: '铂金2星' },
+  { rank: '棋王2星', score: '65000', seasonCarry: '钻石5星', crossSeasonCarry: '铂金2星' },
+  { rank: '棋王3星', score: '75000', seasonCarry: '钻石5星', crossSeasonCarry: '铂金2星' },
+  { rank: '棋王4星', score: '85000', seasonCarry: '钻石5星', crossSeasonCarry: '铂金2星' },
+  { rank: '棋王5星', score: '100000', seasonCarry: '钻石5星', crossSeasonCarry: '铂金2星' },
+  { rank: '棋王6星', score: '120000', seasonCarry: '钻石5星', crossSeasonCarry: '铂金2星' },
+  { rank: '棋王7星', score: '140000', seasonCarry: '钻石5星', crossSeasonCarry: '铂金2星' },
+  { rank: '棋王8星', score: '160000', seasonCarry: '钻石5星', crossSeasonCarry: '铂金2星' },
+  { rank: '棋王9星', score: '180000', seasonCarry: '钻石5星', crossSeasonCarry: '铂金2星' },
+  { rank: '棋王10星', score: '200000', seasonCarry: '钻石5星', crossSeasonCarry: '铂金2星' },
+];
 const modeItems: Array<{ id: Mode; label: string; hint: string; count: string; token: string; icon: string }> = [
   { id: 'xiangqi', label: '象棋', hint: '评测 对局 训练', count: '190720', token: '象', icon: xiangqiIcon },
   { id: 'jieqi', label: '揭棋', hint: '暗子翻开更刺激', count: '18987', token: '揭', icon: jieqiIcon },
@@ -348,6 +567,19 @@ function getMatchMode(mode: MatchMode): LobbyMode {
   return matchModes.find((item) => item.id === mode) ?? matchModes[0];
 }
 
+function mapXiangqiMatchMode(action: XiangqiFeatureAction): MatchMode {
+  if (action.match?.mode === 'rank-certification') return 'certification';
+  if (action.match?.mode === 'huashan') return 'huashan';
+  if (action.match?.mode === 'ai') return 'training';
+  if (action.match?.mode === 'friend') return 'friend';
+  if (action.match?.mode === 'ranked') {
+    if (action.match.minutes === 5) return 'fast5';
+    if (action.match.minutes === 20) return 'slow20';
+    return 'standard10';
+  }
+  return 'standard10';
+}
+
 export default function App() {
   const [route, setRoute] = useState<Route>('home');
   const [activeMode, setActiveMode] = useState<Mode>('xiangqi');
@@ -360,13 +592,9 @@ export default function App() {
   const [opponentIndex, setOpponentIndex] = useState(1);
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
   const [replayPlaying, setReplayPlaying] = useState(false);
-  const [puzzleBoard, setPuzzleBoard] = useState<Piece[]>(() => clonePieces(puzzlePieces));
+  const [puzzleSession, setPuzzleSession] = useState(() => createPuzzleSession(dailyPuzzle));
   const [puzzleSelected, setPuzzleSelected] = useState<string | null>(null);
   const [puzzleLegalMoves, setPuzzleLegalMoves] = useState<Position[]>([]);
-  const [puzzleStatus, setPuzzleStatus] = useState<PuzzleState>('ready');
-  const [puzzleMoves, setPuzzleMoves] = useState(0);
-  const [puzzleSeconds, setPuzzleSeconds] = useState(0);
-  const [puzzleHintVisible, setPuzzleHintVisible] = useState(false);
   const [puzzleCommentsOpen, setPuzzleCommentsOpen] = useState(false);
   const [gobangBoard, setGobangBoard] = useState<number[][]>(() => createGobangBoard());
   const [gobangStatus, setGobangStatus] = useState('黑先手');
@@ -379,6 +607,7 @@ export default function App() {
   const [chatMessages, setChatMessages] = useState<string[]>(['系统提示：欢迎来到天天象棋!']);
   const [drawOffersLeft, setDrawOffersLeft] = useState(3);
   const [undoLeft, setUndoLeft] = useState(3);
+  const [puzzleProgress, setPuzzleProgress] = useState<PuzzleProgress>(() => createPuzzleProgress());
   const [gameSettings, setGameSettings] = useState<GameSettings>({
     moveHints: true,
     coordinates: true,
@@ -388,7 +617,15 @@ export default function App() {
     messages: true,
   });
   const [toast, setToast] = useState<ToastState | null>(null);
+  const [rulesDialog, setRulesDialog] = useState<RulesDialogKind | null>(null);
+  const [featureDialog, setFeatureDialog] = useState<FeatureDialogState | null>(null);
   const contentFrameRef = useRef<HTMLDivElement>(null);
+  const puzzleBoard = puzzleSession.pieces;
+  const puzzleStatus = puzzleSession.status;
+  const puzzleMoves = puzzleSession.steps;
+  const puzzleSeconds = puzzleSession.elapsedSeconds;
+  const puzzleHintTarget = puzzleSession.revealedHint?.target ?? null;
+  const puzzleHintVisible = Boolean(puzzleHintTarget);
   const isLobbyTitle =
     route === 'lobby' ||
     (route === 'home' && bottomTab === 'play' && (activeMode === 'jieqi' || activeMode === 'puzzle' || activeMode === 'more'));
@@ -430,8 +667,9 @@ export default function App() {
   }, [game.phase, game.paused, route]);
 
   useEffect(() => {
-    if (!((route === 'home' && activeMode === 'puzzle' && bottomTab === 'play') || route === 'puzzle') || puzzleStatus !== 'ready') return;
-    const timer = window.setInterval(() => setPuzzleSeconds((seconds) => seconds + 1), 1000);
+    const puzzleVisible = (route === 'home' && activeMode === 'puzzle' && bottomTab === 'play') || route === 'puzzle';
+    if (!puzzleVisible || puzzleStatus === 'solved' || puzzleStatus === 'failed') return;
+    const timer = window.setInterval(() => setPuzzleSession((current) => tickPuzzleSession(current)), 1000);
     return () => window.clearInterval(timer);
   }, [activeMode, bottomTab, puzzleStatus, route]);
 
@@ -442,7 +680,7 @@ export default function App() {
       setGame((current) => {
         if (current.phase !== 'playing' || current.turn !== 'black' || current.paused) return current;
         const move = chooseAiMove(current.pieces, current.moveHistory.length);
-        if (!move) return finishGame(current, 'red', 'checkmate');
+        if (!move) return finishGame(current, 'red', getDefeatReason(current.pieces, 'black') ?? 'stalemate');
         return applyMove(current, move.pieceId, move.to);
       });
     }, 650);
@@ -492,6 +730,93 @@ export default function App() {
 
   function showToast(message: string, kind: ToastKind = 'info') {
     setToast({ id: Date.now(), message, kind });
+  }
+
+  function openModeHelp() {
+    if (route === 'lobby' || activeMode === 'xiangqi') {
+      setRulesDialog('xiangqi');
+      return;
+    }
+    if (activeMode === 'jieqi') {
+      setRulesDialog('jieqi');
+      return;
+    }
+    if (activeMode === 'ranked') {
+      setRulesDialog('ranked');
+      return;
+    }
+    showToast(`${pageTitle}玩法帮助后续开放`, 'info');
+  }
+
+  function openXiangqiFeature(entryId: XiangqiFeatureEntryId) {
+    setFeatureDialog({ kind: 'xiangqi', entryId });
+  }
+
+  function openJieqiFeature(entryId: JieqiFeatureEntryId) {
+    setFeatureDialog({ kind: 'jieqi', entryId });
+  }
+
+  function openPuzzleFeature(entryId: string) {
+    setFeatureDialog({ kind: 'puzzle', entryId });
+  }
+
+  function runFeaturePrimaryAction() {
+    if (!featureDialog) return;
+
+    if (featureDialog.kind === 'xiangqi') {
+      const action = getXiangqiFeatureAction(featureDialog.entryId);
+      if (action.type === 'start-match' && action.match) {
+        setFeatureDialog(null);
+        startMatching(mapXiangqiMatchMode(action));
+        return;
+      }
+      if (action.type === 'open-puzzle') {
+        setFeatureDialog(null);
+        setActiveMode('puzzle');
+        setBottomTab('play');
+        setRoute('puzzle');
+        return;
+      }
+      showToast(`${action.title}已在面板中展示`, 'info');
+      return;
+    }
+
+    if (featureDialog.kind === 'jieqi') {
+      const action = getJieqiFeatureAction(featureDialog.entryId);
+      if (action.type === 'start-jieqi') {
+        setFeatureDialog(null);
+        setActiveMode('jieqi');
+        setBottomTab('play');
+        setRoute('jieqi');
+        return;
+      }
+      showToast(`${action.title}已在面板中展示`, 'info');
+      return;
+    }
+
+    const action = getPuzzleFeatureAction(featureDialog.entryId, puzzleProgress);
+    if (action.type === 'open-daily' || action.type === 'open-set' || action.type === 'open-review') {
+      setFeatureDialog(null);
+      setActiveMode('puzzle');
+      setBottomTab('play');
+      setRoute('puzzle');
+      return;
+    }
+    if (action.type === 'open-comments') {
+      setFeatureDialog(null);
+      setPuzzleCommentsOpen(true);
+      return;
+    }
+    if (action.type === 'show-panel' && action.panel === 'analysis') {
+      showPuzzleHint();
+      return;
+    }
+    if (action.type === 'show-panel' && action.panel === 'restart') {
+      resetPuzzle();
+      showToast('残局已重置', 'success');
+      return;
+    }
+    showToast(action.label, 'info');
   }
 
   function openMode(mode: Mode) {
@@ -655,23 +980,33 @@ export default function App() {
   }
 
   function selectPuzzlePoint(point: Position) {
-    if (puzzleStatus === 'solved') return;
+    if (puzzleStatus === 'solved' || puzzleStatus === 'failed') return;
     const selected = puzzleSelected ? findPiece(puzzleBoard, puzzleSelected) : undefined;
     const pointPiece = getPieceAt(puzzleBoard, point);
     if (selected && hasPoint(puzzleLegalMoves, point)) {
-      const captured = getPieceAt(puzzleBoard, point);
-      const nextPieces = movePiece(puzzleBoard, selected.id, point);
-      setPuzzleBoard(nextPieces);
+      const result = applyPuzzleMove(dailyPuzzle, puzzleSession, { pieceId: selected.id, to: point });
+      setPuzzleSession(result.session);
       setPuzzleSelected(null);
       setPuzzleLegalMoves([]);
-      setPuzzleMoves((moves) => moves + 1);
-      setPuzzleHintVisible(false);
-      setPuzzleStatus(captured?.kind === 'king' ? 'solved' : 'failed');
+      if (result.session.status === 'solved' || result.session.status === 'failed') {
+        setPuzzleProgress((current) =>
+          recordPuzzleAttempt(current, {
+            puzzleId: dailyPuzzle.id,
+            outcome: result.session.status === 'solved' ? 'solved' : 'failed',
+            elapsedSeconds: result.session.elapsedSeconds,
+            hintsUsed: result.session.hintsUsed,
+            moves: result.session.steps,
+            session: result.session,
+          }),
+        );
+      }
+      if (result.verdict === 'success') showToast('残局挑战成功，已记录进度', 'success');
+      if (result.verdict === 'incorrect' || result.verdict === 'failure') showToast(result.message, 'warning');
       return;
     }
-    if (pointPiece?.side === 'red') {
+    if (pointPiece?.side === puzzleSession.turn) {
       setPuzzleSelected(pointPiece.id);
-      setPuzzleLegalMoves(getLegalMoves(puzzleBoard, pointPiece));
+      setPuzzleLegalMoves(getPuzzleLegalMoves(puzzleSession, pointPiece.id));
     } else {
       setPuzzleSelected(null);
       setPuzzleLegalMoves([]);
@@ -679,13 +1014,13 @@ export default function App() {
   }
 
   function resetPuzzle() {
-    setPuzzleBoard(clonePieces(puzzlePieces));
+    setPuzzleSession((current) => resetPuzzleSession(dailyPuzzle, current));
     setPuzzleSelected(null);
     setPuzzleLegalMoves([]);
-    setPuzzleStatus('ready');
-    setPuzzleMoves(0);
-    setPuzzleSeconds(0);
-    setPuzzleHintVisible(false);
+  }
+
+  function showPuzzleHint() {
+    setPuzzleSession((current) => revealPuzzleHint(dailyPuzzle, current).session);
   }
 
   function playGobang(x: number, y: number) {
@@ -784,7 +1119,7 @@ export default function App() {
                 <ChevronLeft size={24} />
               </button>
               {activeMode !== 'puzzle' && activeMode !== 'more' && (
-                <button className="round-button" aria-label="帮助" onClick={() => showToast(`${pageTitle}玩法帮助后续开放`, 'info')}>
+                <button className="round-button" aria-label="帮助" onClick={openModeHelp}>
                   <HelpCircle size={22} />
                 </button>
               )}
@@ -812,6 +1147,7 @@ export default function App() {
               puzzleMoves={puzzleMoves}
               puzzleSeconds={puzzleSeconds}
               puzzleHintVisible={puzzleHintVisible}
+              puzzleProgress={puzzleProgress}
               gobangBoard={gobangBoard}
               gobangStatus={gobangStatus}
               onStart={() => setRoute('lobby')}
@@ -821,15 +1157,19 @@ export default function App() {
               onStartMoreGame={() => setRoute('more-game')}
               onPuzzlePoint={selectPuzzlePoint}
               onPuzzleReset={resetPuzzle}
-              onPuzzleHint={() => setPuzzleHintVisible(true)}
+              onPuzzleHint={showPuzzleHint}
               onPuzzleComments={() => setPuzzleCommentsOpen(true)}
               onGobangPoint={playGobang}
               onGobangReset={resetGobang}
               onUnavailable={showToast}
+              onRankedHelp={() => setRulesDialog('ranked')}
+              onXiangqiFeature={openXiangqiFeature}
+              onJieqiFeature={openJieqiFeature}
+              onPuzzleFeature={openPuzzleFeature}
               onReturnHome={returnHomeLanding}
             />
           )}
-          {route === 'lobby' && <LobbyScreen onStart={startMatching} onUnavailable={showToast} />}
+          {route === 'lobby' && <LobbyScreen onFeature={openXiangqiFeature} />}
           {route === 'jieqi' && <JieqiScreen />}
           {route === 'puzzle' && (
             <PuzzleScreen
@@ -840,9 +1180,10 @@ export default function App() {
               moves={puzzleMoves}
               seconds={puzzleSeconds}
               hintVisible={puzzleHintVisible}
+              hintTarget={puzzleHintTarget}
               onSelectPoint={selectPuzzlePoint}
               onReset={resetPuzzle}
-              onHint={() => setPuzzleHintVisible(true)}
+              onHint={showPuzzleHint}
               onComments={() => setPuzzleCommentsOpen(true)}
             />
           )}
@@ -938,6 +1279,15 @@ export default function App() {
         {((route === 'home' && activeMode === 'puzzle') || route === 'puzzle') && puzzleCommentsOpen && (
           <PuzzleCommentDialog onClose={() => setPuzzleCommentsOpen(false)} />
         )}
+        {featureDialog && (
+          <FeatureActionDialog
+            state={featureDialog}
+            puzzleProgress={puzzleProgress}
+            onClose={() => setFeatureDialog(null)}
+            onPrimary={runFeaturePrimaryAction}
+          />
+        )}
+        {rulesDialog && <RulesDialog kind={rulesDialog} onClose={() => setRulesDialog(null)} />}
         {toast && <Toast key={toast.id} toast={toast} />}
 
         <nav className="bottom-tabs" aria-label="主导航">
@@ -970,6 +1320,7 @@ function HomeScreen({
   puzzleMoves,
   puzzleSeconds,
   puzzleHintVisible,
+  puzzleProgress,
   gobangBoard,
   gobangStatus,
   onStart,
@@ -984,6 +1335,10 @@ function HomeScreen({
   onGobangPoint,
   onGobangReset,
   onUnavailable,
+  onRankedHelp,
+  onXiangqiFeature,
+  onJieqiFeature,
+  onPuzzleFeature,
   onReturnHome,
 }: {
   activeMode: Mode;
@@ -995,6 +1350,7 @@ function HomeScreen({
   puzzleMoves: number;
   puzzleSeconds: number;
   puzzleHintVisible: boolean;
+  puzzleProgress: PuzzleProgress;
   gobangBoard: number[][];
   gobangStatus: string;
   onStart: () => void;
@@ -1009,17 +1365,29 @@ function HomeScreen({
   onGobangPoint: (x: number, y: number) => void;
   onGobangReset: () => void;
   onUnavailable: (message: string, kind?: ToastKind) => void;
+  onRankedHelp: () => void;
+  onXiangqiFeature: (entryId: XiangqiFeatureEntryId) => void;
+  onJieqiFeature: (entryId: JieqiFeatureEntryId) => void;
+  onPuzzleFeature: (entryId: string) => void;
   onReturnHome: () => void;
 }) {
   if (bottomTab !== 'play') {
     return <TabShell tab={bottomTab} />;
   }
 
-  if (activeMode === 'puzzle') return <PuzzleLobbyScreen onOpenPuzzle={onStartPuzzle} onUnavailable={onUnavailable} />;
+  if (activeMode === 'puzzle') {
+    return (
+      <PuzzleLobbyScreen
+        progress={puzzleProgress}
+        onOpenPuzzle={onStartPuzzle}
+        onFeature={onPuzzleFeature}
+      />
+    );
+  }
 
-  if (activeMode === 'jieqi') return <JieqiLobbyScreen onOpenEvaluation={onStartJieqi} onUnavailable={onUnavailable} />;
+  if (activeMode === 'jieqi') return <JieqiLobbyScreen onFeature={onJieqiFeature} />;
   if (activeMode === 'more') return <MoreGamesLobbyScreen onOpenGame={onStartMoreGame} onUnavailable={onUnavailable} />;
-  if (activeMode === 'ranked') return <RankedScreen onStart={onStartRanked} onBack={onReturnHome} onHelp={() => onUnavailable('排位赛规则帮助后续开放', 'info')} />;
+  if (activeMode === 'ranked') return <RankedScreen onStart={onStartRanked} onBack={onReturnHome} onHelp={onRankedHelp} />;
 
   return (
     <section className="home-layout">
@@ -1112,58 +1480,92 @@ function ActivityWidget() {
   );
 }
 
+function getPuzzleFeatureIcon(entry: PuzzleFeatureEntry): IconComponent {
+  if (entry.kind === 'training') return PenLine;
+  if (entry.kind === 'theme') return Flame;
+  if (entry.kind === 'mistakes') return RotateCcw;
+  if (entry.kind === 'favorites') return Star;
+  if (entry.kind === 'ranking') return Trophy;
+  if (entry.kind === 'comments') return MessageCircle;
+  if (entry.kind === 'analysis') return Lightbulb;
+  if (entry.kind === 'restart') return RotateCcw;
+  return Swords;
+}
+
+function getPuzzleEntryMeta(
+  entry: PuzzleFeatureEntry,
+  action: ReturnType<typeof getPuzzleFeatureAction>,
+  progress: PuzzleProgress,
+): string {
+  if (entry.kind === 'mistakes') return `${progress.mistakePuzzleIds.length}题`;
+  if (entry.kind === 'favorites') return `${progress.favoritePuzzleIds.length}题`;
+  if (entry.kind === 'ranking') return `${progress.bestStreak}连胜`;
+  if (entry.kind === 'comments') return `${dailyPuzzle.stats.commentCount}条`;
+  if (action.set) {
+    const setProgress = progress.trainingSetProgress[action.set.id];
+    return setProgress ? `${setProgress.completed}/${setProgress.total}` : `${action.set.estimatedMinutes}分钟`;
+  }
+  return entry.badge ?? '';
+}
+
 function PuzzleLobbyScreen({
+  progress,
   onOpenPuzzle,
-  onUnavailable,
+  onFeature,
 }: {
+  progress: PuzzleProgress;
   onOpenPuzzle: () => void;
-  onUnavailable: (message: string, kind?: ToastKind) => void;
+  onFeature: (entryId: string) => void;
 }) {
+  const stats = getPuzzleDashboardStats(progress);
+  const puzzleEntries = puzzleFeatureEntries.filter((entry) => entry.id !== 'daily');
+
   return (
     <section className="puzzle-lobby" aria-label="残局挑战入口">
       <div className="puzzle-resources" aria-label="残局资源">
         <span>
           <Gem size={17} />
-          2500
+          {stats.completedCount}
         </span>
         <span>
           <Zap size={17} />
-          9
+          {stats.currentStreak}
         </span>
         <span>
           <Lightbulb size={17} />
-          4
+          {stats.totalHintsUsed}
         </span>
       </div>
 
       <div className="puzzle-panel">
         <button className="daily-puzzle-card" onClick={onOpenPuzzle}>
           <span className="daily-board" aria-hidden="true">
-            <ChessBoard pieces={puzzlePieces} compact />
+            <ChessBoard pieces={dailyPuzzle.pieces} compact />
           </span>
           <span className="daily-copy">
             <strong>每日残局</strong>
-            <small>2026年05月27日</small>
-            <span>累计<b>50417人</b>挑战,<b>87%</b>过关</span>
-            <span>北京市北京市仅<b>6679人</b>能破</span>
+            <small>2026年05月28日</small>
+            <span>累计<b>{dailyPuzzle.stats.challengeCount}</b>人挑战,<b>{Math.round(dailyPuzzle.stats.passRate * 100)}%</b>过关</span>
+            <span>最快纪录<b>{stats.fastestSolveSeconds ?? dailyPuzzle.stats.fastestSeconds}秒</b> · 错题<b>{stats.mistakeCount}</b></span>
           </span>
         </button>
 
         <div className="puzzle-entry-list">
-          {puzzleLobbyEntries.map((entry, index) => {
-            const Icon = entry.icon;
-            const standalone = index === 0 || index === 1 || index === 4;
+          {puzzleEntries.map((entry, index) => {
+            const Icon = getPuzzleFeatureIcon(entry);
+            const action = getPuzzleFeatureAction(entry.id, progress);
+            const standalone = index === 0 || entry.kind === 'mistakes' || entry.kind === 'ranking';
             return (
               <Fragment key={entry.id}>
                 {standalone && index > 0 && <div className="puzzle-entry-gap" />}
                 <button
                   className="puzzle-entry"
                   onClick={() => {
-                    if (entry.id === 'pass') {
+                    if (entry.id === 'campaign') {
                       onOpenPuzzle();
                       return;
                     }
-                    onUnavailable(`${entry.title}后续开放`, 'info');
+                    onFeature(entry.id);
                   }}
                 >
                   <span className="puzzle-entry-icon" aria-hidden="true">
@@ -1171,9 +1573,9 @@ function PuzzleLobbyScreen({
                   </span>
                   <span className="puzzle-entry-copy">
                     <strong>{entry.title}</strong>
-                    <small>{entry.detail ?? entry.count}</small>
+                    <small>{entry.subtitle}</small>
                   </span>
-                  <span className="puzzle-entry-meta">{entry.bonus ?? ''}</span>
+                  <span className="puzzle-entry-meta">{getPuzzleEntryMeta(entry, action, progress)}</span>
                   <ChevronRight size={22} aria-hidden="true" />
                 </button>
               </Fragment>
@@ -1193,6 +1595,7 @@ function PuzzleScreen({
   moves,
   seconds,
   hintVisible,
+  hintTarget,
   onSelectPoint,
   onReset,
   onHint,
@@ -1205,18 +1608,19 @@ function PuzzleScreen({
   moves: number;
   seconds: number;
   hintVisible: boolean;
+  hintTarget: Position | null;
   onSelectPoint: (point: Position) => void;
   onReset: () => void;
   onHint: () => void;
   onComments: () => void;
 }) {
   const statusText = status === 'solved' ? '挑战成功' : status === 'failed' ? '这步不是最佳解' : '红先一手取胜';
-  const marks = hintVisible ? [...legalMoves, puzzleHintTarget] : legalMoves;
+  const marks = hintVisible && hintTarget ? [...legalMoves, hintTarget] : legalMoves;
   return (
     <section className="mode-shell">
       <div className="section-title">
         <p className="eyebrow">每日残局</p>
-        <h2>车临中路</h2>
+        <h2>{dailyPuzzle.title}</h2>
       </div>
       <div className="feature-grid">
         <ModeCard title="评分" value={status === 'solved' ? '三星' : '待完成'} />
@@ -1229,7 +1633,7 @@ function PuzzleScreen({
         <div className="feed-list">
           <InfoRow title="闯关" detail="入门残局 · 第1关" />
           <InfoRow title="挑战" detail="点击红车，看绿色落点" />
-          <InfoRow title="推荐" detail={hintVisible ? '红车进一将军' : '提示可查看推荐落点'} />
+          <InfoRow title="推荐" detail={hintVisible ? (dailyPuzzle.hints[0]?.title ?? '已显示推荐落点') : '提示可查看推荐落点'} />
           <button className="full-width" onClick={onHint}>
             <Medal size={18} />
             提示
@@ -1271,45 +1675,26 @@ function PuzzleCommentDialog({ onClose }: { onClose: () => void }) {
   );
 }
 
-function createInitialJieqiPieces(): JieqiPiece[] {
-  return startingPieces.map((piece) => {
-    const revealed = piece.kind === 'king';
-    return {
-      ...piece,
-      hidden: !revealed,
-      revealed,
-    };
-  });
-}
-
-function moveJieqiPiece(pieces: JieqiPiece[], pieceId: string, to: Position): JieqiPiece[] {
-  return pieces
-    .filter((piece) => piece.id === pieceId || !samePoint(piece, to))
-    .map((piece) => (piece.id === pieceId ? { ...piece, ...to, hidden: false, revealed: true } : piece));
-}
-
 function JieqiScreen() {
   const [pieces, setPieces] = useState<JieqiPiece[]>(() => createInitialJieqiPieces());
   const [selectedPiece, setSelectedPiece] = useState<string | null>(null);
   const [legalMoves, setLegalMoves] = useState<Position[]>([]);
   const [status, setStatus] = useState('红方先行，暗子移动后揭示');
   const [moveCount, setMoveCount] = useState(0);
-  const displayPieces = pieces.map((piece) => ({
-    ...piece,
-    label: piece.hidden && !piece.revealed ? '暗' : piece.label,
-  }));
+  const displayPieces = toDisplayJieqiPieces(pieces);
 
   function selectJieqiPoint(point: Position) {
     if (/胜|结束/.test(status)) return;
     const selected = selectedPiece ? pieces.find((piece) => piece.id === selectedPiece) : undefined;
-    const pointPiece = pieces.find((piece) => samePoint(piece, point));
+    const pointPiece = getJieqiPieceAt(pieces, point);
     if (selected && hasPoint(legalMoves, point)) {
-      const captured = pieces.find((piece) => samePoint(piece, point));
-      const afterPlayer = moveJieqiPiece(pieces, selected.id, point);
+      const playerResult = applyJieqiMove(pieces, selected.id, point);
+      if (!playerResult) return;
+      const afterPlayer = playerResult.pieces;
       setSelectedPiece(null);
       setLegalMoves([]);
       setMoveCount((count) => count + 1);
-      if (captured?.kind === 'king') {
+      if (playerResult.captured?.kind === 'king') {
         setPieces(afterPlayer);
         setStatus('揭棋评测 · 我方胜');
         return;
@@ -1320,16 +1705,20 @@ function JieqiScreen() {
         setStatus('揭棋评测 · 我方胜');
         return;
       }
-      const aiTarget = getPieceAt(afterPlayer, aiMove.to);
-      const afterAi = moveJieqiPiece(afterPlayer, aiMove.pieceId, aiMove.to);
-      setPieces(afterAi);
+      const aiResult = applyJieqiMove(afterPlayer, aiMove.pieceId, aiMove.to);
+      if (!aiResult) {
+        setPieces(afterPlayer);
+        setStatus('揭棋评测 · 我方胜');
+        return;
+      }
+      setPieces(aiResult.pieces);
       setMoveCount((count) => count + 1);
-      setStatus(aiTarget?.kind === 'king' ? '揭棋评测 · 对方胜' : 'AI 已应手，红方继续');
+      setStatus(aiResult.captured?.kind === 'king' ? '揭棋评测 · 对方胜' : 'AI 已应手，红方继续');
       return;
     }
     if (pointPiece?.side === 'red') {
       setSelectedPiece(pointPiece.id);
-      setLegalMoves(getLegalMoves(pieces, pointPiece));
+      setLegalMoves(getJieqiLegalMoves(pieces, pointPiece.id));
       setStatus(pointPiece.hidden ? '暗子按真实身份生成落点' : `${pointPiece.label}可走`);
       return;
     }
@@ -1548,6 +1937,217 @@ function FlipExitDialog({ onCancel, onConfirm }: { onCancel: () => void; onConfi
       </div>
     </div>
   );
+}
+
+function RulesDialog({ kind, onClose }: { kind: RulesDialogKind; onClose: () => void }) {
+  const titles: Record<RulesDialogKind, string> = {
+    xiangqi: '象棋玩法帮助',
+    jieqi: '揭棋玩法帮助',
+    ranked: '排位赛说明',
+  };
+  const sectionsByKind: Record<RulesDialogKind, RuleSection[]> = {
+    xiangqi: xiangqiRulesSections,
+    jieqi: jieqiRulesSections,
+    ranked: rankedRulesSections,
+  };
+  const title = titles[kind];
+  const sections = sectionsByKind[kind];
+
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="confirm-card rules-card">
+        <button className="round-button" aria-label="关闭帮助" onClick={onClose}>
+          <X size={18} />
+        </button>
+        <h2>{title}</h2>
+        <div className="rules-content">
+          {sections.map((section) => (
+            <section className="rule-block" key={section.title}>
+              <h3>{section.title}</h3>
+              <ol>
+                {section.items.map((item) => (
+                  <li key={item}>{item}</li>
+                ))}
+              </ol>
+            </section>
+          ))}
+          {kind === 'ranked' && (
+            <section className="rule-block ranked-rules-table-block">
+              <h3>三、段位表</h3>
+              <div className="ranked-rules-table-wrap">
+                <table className="ranked-rules-table">
+                  <thead>
+                    <tr>
+                      <th>段位</th>
+                      <th>分数</th>
+                      <th>新赛季继承</th>
+                      <th>跨赛季继承</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {rankedRankRows.map((row) => (
+                      <tr key={row.rank}>
+                        <td>{row.rank}</td>
+                        <td>{row.score}</td>
+                        <td>{row.seasonCarry}</td>
+                        <td>{row.crossSeasonCarry}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+          )}
+        </div>
+        <button className="primary-action full-width" onClick={onClose}>知道了</button>
+      </div>
+    </div>
+  );
+}
+
+type FeatureDialogContent = {
+  title: string;
+  description: string;
+  cta: string;
+  rows: Array<{ title: string; detail: string }>;
+  tips: string[];
+  risks: string[];
+  disabled?: boolean;
+};
+
+function FeatureActionDialog({
+  state,
+  puzzleProgress,
+  onClose,
+  onPrimary,
+}: {
+  state: FeatureDialogState;
+  puzzleProgress: PuzzleProgress;
+  onClose: () => void;
+  onPrimary: () => void;
+}) {
+  const content = getFeatureDialogContent(state, puzzleProgress);
+
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true" aria-label={content.title}>
+      <div className="confirm-card feature-action-card">
+        <button className="round-button" aria-label="关闭功能面板" onClick={onClose}>
+          <X size={18} />
+        </button>
+        <h2>{content.title}</h2>
+        <p className="feature-action-description">{content.description}</p>
+        <div className="intro-rules">
+          {content.rows.map((row) => (
+            <InfoRow title={row.title} detail={row.detail} key={row.title} />
+          ))}
+        </div>
+        {content.tips.length > 0 && (
+          <section className="feature-action-section">
+            <h3>规则提示</h3>
+            <ul>
+              {content.tips.map((tip) => (
+                <li key={tip}>{tip}</li>
+              ))}
+            </ul>
+          </section>
+        )}
+        {content.risks.length > 0 && (
+          <section className="feature-action-section">
+            <h3>注意事项</h3>
+            <ul>
+              {content.risks.map((risk) => (
+                <li key={risk}>{risk}</li>
+              ))}
+            </ul>
+          </section>
+        )}
+        <button className="primary-action full-width" onClick={content.disabled ? onClose : onPrimary}>
+          {content.disabled ? '知道了' : content.cta}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function getFeatureDialogContent(state: FeatureDialogState, puzzleProgress: PuzzleProgress): FeatureDialogContent {
+  if (state.kind === 'xiangqi') {
+    const action = getXiangqiFeatureAction(state.entryId);
+    const rows = [
+      { title: '功能状态', detail: action.type === 'disabled' ? '安全占位' : action.cta },
+      { title: '入口类型', detail: action.type },
+    ];
+    if (action.match) {
+      rows.push({
+        title: '对局配置',
+        detail: action.match.minutes ? `${action.match.minutes}分钟 · ${action.match.rated ? '计积分' : '不计积分'}` : action.match.mode,
+      });
+      rows.push({
+        title: '有效局',
+        detail: action.match.requiresEffectiveGame ? '需要完成有效局' : '练习或好友引导',
+      });
+    }
+    return {
+      title: action.title,
+      description: action.description,
+      cta: action.cta,
+      rows,
+      tips: action.ruleTips,
+      risks: action.riskTips,
+      disabled: action.type === 'disabled',
+    };
+  }
+
+  if (state.kind === 'jieqi') {
+    const entry = getJieqiFeatureEntry(state.entryId);
+    const action = getJieqiFeatureAction(state.entryId);
+    const callouts = getJieqiRuleCallouts(state.entryId);
+    const rows = [
+      { title: '功能状态', detail: action.type === 'start-jieqi' ? '可进入本地揭棋评测' : action.cta },
+      { title: '支付保护', detail: action.paymentRequired ? '需要二次确认' : '不直接支付或扣费' },
+    ];
+    if (entry.entryLimit) rows.push({ title: '入场限制', detail: entry.entryLimit });
+    if (entry.rewardHint) rows.push({ title: '奖励/结算', detail: entry.rewardHint });
+    if (action.payload.matchConfig) rows.push({ title: '局时', detail: action.payload.matchConfig.timeControl });
+    if (entry.baseStake) rows.push({ title: '底注', detail: `${entry.baseStake}` });
+    if (entry.wealthRange) rows.push({ title: '财富范围', detail: entry.wealthRange });
+    return {
+      title: action.title,
+      description: action.description,
+      cta: action.cta,
+      rows,
+      tips: callouts.map((callout) => `${callout.title}：${callout.body}`),
+      risks: entry.category === 'commerce' ? ['商城入口只展示浏览面板，不直接下单或拉起支付。'] : [],
+      disabled: action.type === 'disabled',
+    };
+  }
+
+  const entry = puzzleFeatureEntries.find((item) => item.id === state.entryId);
+  const action = getPuzzleFeatureAction(state.entryId, puzzleProgress);
+  const stats = getPuzzleDashboardStats(puzzleProgress);
+  const rows = [
+    { title: '本地进度', detail: `${stats.completedCount}题完成 · ${stats.currentStreak}连胜 · ${stats.mistakeCount}道错题` },
+    { title: '功能状态', detail: action.localPlaceholder ? '本地占位可展示' : action.label },
+  ];
+  if (action.set) {
+    rows.push({ title: '训练集', detail: `${action.set.title} · ${action.set.estimatedMinutes}分钟 · 难度${action.set.difficulty}` });
+    rows.push({ title: '标签', detail: action.set.tags.join(' / ') });
+  }
+  if (action.type === 'open-ranking') {
+    rows.push({ title: '榜首', detail: `${stats.localRanking[0]?.name ?? '你'} · ${stats.localRanking[0]?.seconds ?? 0}秒` });
+  }
+  return {
+    title: entry?.title ?? action.label,
+    description: entry?.subtitle ?? action.disabledReason ?? action.label,
+    cta: action.label,
+    rows,
+    tips: [
+      '残局子功能全部使用本地进度，不依赖网络或支付。',
+      action.puzzle ? `今日题目：${action.puzzle.title}` : '',
+      action.set ? action.set.description : '',
+    ].filter(Boolean),
+    risks: action.disabledReason ? [action.disabledReason] : ['重来不会清除历史统计，失败会进入错题本。'],
+    disabled: action.type === 'disabled',
+  };
 }
 
 function RankedScreen({ onStart, onBack, onHelp }: { onStart: () => void; onBack: () => void; onHelp: () => void }) {
@@ -1771,12 +2371,31 @@ function TabShell({ tab }: { tab: BottomTab }) {
   );
 }
 
+function mapXiangqiLobbyEntry(entryId: string): XiangqiFeatureEntryId {
+  const map: Record<string, XiangqiFeatureEntryId> = {
+    certification: 'rank-certification',
+    puzzle: 'endgame',
+    rating: 'skill-evaluation',
+    coin: 'coin-arena',
+    huashan: 'huashan',
+    fast: 'ranked-10',
+    friend: 'friend-match',
+    bot: 'ai-match',
+    records: 'my-records',
+    events: 'tournament',
+  };
+  return map[entryId] ?? 'skill-evaluation';
+}
+
+function mapXiangqiDockItem(label: string): XiangqiFeatureEntryId {
+  const item = xiangqiFeatureDockItems.find((candidate) => candidate.title === label);
+  return item?.id ?? 'activity-center';
+}
+
 function LobbyScreen({
-  onStart,
-  onUnavailable,
+  onFeature,
 }: {
-  onStart: (mode: MatchMode) => void;
-  onUnavailable: (message: string, kind?: ToastKind) => void;
+  onFeature: (entryId: XiangqiFeatureEntryId) => void;
 }) {
   return (
     <section className="xiangqi-lobby" aria-label="象棋入口">
@@ -1800,13 +2419,7 @@ function LobbyScreen({
             <button
               className="xiangqi-entry"
               key={entry.id}
-              onClick={() => {
-                if (entry.mode) {
-                  onStart(entry.mode);
-                  return;
-                }
-                onUnavailable(entry.toast ?? '入口后续开放', 'info');
-              }}
+              onClick={() => onFeature(mapXiangqiLobbyEntry(entry.id))}
             >
               <span className={`xiangqi-entry-icon tone-${entry.tone}`} aria-hidden="true">
                 <Icon size={24} />
@@ -1828,7 +2441,7 @@ function LobbyScreen({
             <button
               className="xiangqi-entry is-secondary"
               key={entry.id}
-              onClick={() => onUnavailable(`${entry.title}后续开放`, 'info')}
+              onClick={() => onFeature(mapXiangqiLobbyEntry(entry.id))}
             >
               <span className={`xiangqi-entry-icon tone-${entry.tone}`} aria-hidden="true">
                 <Icon size={24} />
@@ -1857,8 +2470,9 @@ function LobbyScreen({
       <nav className="xiangqi-dock" aria-label="象棋功能">
         {xiangqiDockItems.map((item) => {
           const Icon = item.icon;
+          const featureId = mapXiangqiDockItem(item.label);
           return (
-            <button key={item.label} onClick={() => onUnavailable(`${item.label}后续开放`, 'info')}>
+            <button key={item.label} onClick={() => onFeature(featureId)}>
               <span>
                 <Icon size={25} />
                 {item.badge && <b>{item.badge}</b>}
@@ -1872,13 +2486,7 @@ function LobbyScreen({
   );
 }
 
-function JieqiLobbyScreen({
-  onOpenEvaluation,
-  onUnavailable,
-}: {
-  onOpenEvaluation: () => void;
-  onUnavailable: (message: string, kind?: ToastKind) => void;
-}) {
+function JieqiLobbyScreen({ onFeature }: { onFeature: (entryId: JieqiFeatureEntryId) => void }) {
   return (
     <section className="xiangqi-lobby jieqi-lobby" aria-label="揭棋入口">
       <div className="xiangqi-lobby-head">
@@ -1901,13 +2509,7 @@ function JieqiLobbyScreen({
             <button
               className="xiangqi-entry jieqi-entry"
               key={entry.id}
-              onClick={() => {
-                if (entry.id === 'rating') {
-                  onOpenEvaluation();
-                  return;
-                }
-                onUnavailable(`${entry.title}后续开放`, 'info');
-              }}
+              onClick={() => onFeature(entry.id as JieqiFeatureEntryId)}
             >
               <span className={`xiangqi-entry-icon tone-${entry.tone}`} aria-hidden="true">
                 <Icon size={24} />
@@ -1934,7 +2536,7 @@ function JieqiLobbyScreen({
               {index > 0 && <div className="xiangqi-entry-divider" />}
               <button
                 className="xiangqi-entry is-secondary jieqi-entry"
-                onClick={() => onUnavailable(`${entry.title}后续开放`, 'info')}
+                onClick={() => onFeature(entry.id as JieqiFeatureEntryId)}
               >
                 <span className={`xiangqi-entry-icon tone-${entry.tone}`} aria-hidden="true">
                   <Icon size={24} />
@@ -1962,10 +2564,11 @@ function JieqiLobbyScreen({
       </div>
 
       <nav className="xiangqi-dock" aria-label="揭棋功能">
-        {xiangqiDockItems.map((item) => {
-          const Icon = item.icon;
+        {jieqiFeatureDockItems.map((item) => {
+          const localDock = xiangqiDockItems.find((candidate) => candidate.label === item.label) ?? xiangqiDockItems[0];
+          const Icon = localDock.icon;
           return (
-            <button key={item.label} onClick={() => onUnavailable(`${item.label}后续开放`, 'info')}>
+            <button key={item.label} onClick={() => onFeature(item.entryId)}>
               <span>
                 <Icon size={25} />
                 {item.badge && <b>{item.badge}</b>}
@@ -2733,6 +3336,7 @@ function resultText(result: GameResult | null): string {
 function resultReason(reason: EndReason, winner: Side): string {
   const loser = winner === 'red' ? '对方' : '我方';
   if (reason === 'checkmate') return `${loser}被将死`;
+  if (reason === 'stalemate') return `${loser}无子可走`;
   if (reason === 'timeout') return `${loser}超时`;
   if (reason === 'captured') return `${loser}主帅被吃`;
   return '我方认输';

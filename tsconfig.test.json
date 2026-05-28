@@ -15,5 +15,5 @@
     "outDir": ".test-dist",
     "jsx": "react-jsx"
   },
-  "include": ["src/game.ts", "tests"]
+  "include": ["src/game.ts", "src/jieqi.ts", "src/jieqiLobby.ts", "src/puzzle.ts", "src/puzzleLobby.ts", "src/xiangqiLobby.ts", "tests"]
 }

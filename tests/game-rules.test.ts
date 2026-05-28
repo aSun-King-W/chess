@@ -7,10 +7,12 @@ import {
   createInitialGame,
   finishGame,
   findPiece,
+  getDefeatReason,
   getLegalMoves,
   getPieceAt,
   hasGobangWin,
   hasPoint,
+  isCheckmate,
   isInCheck,
   movePiece,
   placeStone,
@@ -103,6 +105,52 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: '被将军时只能选择能解除将军的应法',
+    run: () => {
+      const redPawn = piece({ id: 'rp', side: 'red', kind: 'pawn', x: 0, y: 6 });
+      const redAdvisor = piece({ id: 'ra', side: 'red', kind: 'advisor', x: 3, y: 9 });
+      const pieces = [
+        piece({ id: 'rk', side: 'red', kind: 'king', x: 4, y: 9 }),
+        piece({ id: 'bk', side: 'black', kind: 'king', x: 5, y: 0 }),
+        piece({ id: 'br', side: 'black', kind: 'rook', x: 4, y: 7 }),
+        redPawn,
+        redAdvisor,
+      ];
+      assert(isInCheck(pieces, 'red'), 'red should be in rook check');
+      assert(getLegalMoves(pieces, redPawn).length === 0, 'unrelated pawn move cannot ignore check');
+      assertPoint(getLegalMoves(pieces, redAdvisor), { x: 4, y: 8 }, 'advisor can block the checking file');
+      assertNoPoint(getLegalMoves(pieces, pieces[0]), { x: 4, y: 8 }, 'king cannot move onto the rook line');
+    },
+  },
+  {
+    name: '将死会在规则层识别为 checkmate',
+    run: () => {
+      const pieces = [
+        piece({ id: 'rk', side: 'red', kind: 'king', x: 4, y: 9 }),
+        piece({ id: 'bk', side: 'black', kind: 'king', x: 4, y: 0 }),
+        piece({ id: 'br-check', side: 'black', kind: 'rook', x: 4, y: 8 }),
+        piece({ id: 'br-left', side: 'black', kind: 'rook', x: 3, y: 0 }),
+        piece({ id: 'br-right', side: 'black', kind: 'rook', x: 5, y: 0 }),
+      ];
+      assert(isCheckmate(pieces, 'red'), 'red king should have no legal answer');
+      assert(getDefeatReason(pieces, 'red') === 'checkmate', 'defeat reason should be checkmate');
+    },
+  },
+  {
+    name: '无合法步但未被将军会标记为困毙',
+    run: () => {
+      const pieces = [
+        piece({ id: 'rk', side: 'red', kind: 'king', x: 8, y: 9 }),
+        piece({ id: 'bk', side: 'black', kind: 'king', x: 4, y: 0 }),
+        piece({ id: 'rr-left', side: 'red', kind: 'rook', x: 3, y: 9 }),
+        piece({ id: 'rr-right', side: 'red', kind: 'rook', x: 5, y: 9 }),
+        piece({ id: 'rr-rank', side: 'red', kind: 'rook', x: 0, y: 1 }),
+      ];
+      assert(!isInCheck(pieces, 'black'), 'black king is not currently checked');
+      assert(getDefeatReason(pieces, 'black') === 'stalemate', 'black has no legal move and loses by stalemate');
+    },
+  },
+  {
     name: '吃掉将帅会结束对局并保留结算棋谱',
     run: () => {
       const game = {
@@ -120,6 +168,38 @@ const tests: TestCase[] = [
     },
   },
   {
+    name: '走子入口会拒绝非当前方和非法落点',
+    run: () => {
+      const game = createInitialGame();
+      const blackTried = applyMove(game, 'bn1', { x: 2, y: 2 });
+      assert(blackTried.moveHistory.length === 0, 'black cannot move before red');
+      assert(findPiece(blackTried.pieces, 'bn1')?.x === 1, 'out-of-turn piece should stay put');
+
+      const blockedRook = applyMove(game, 'rr1', { x: 0, y: 5 });
+      assert(blockedRook.moveHistory.length === 0, 'rook cannot jump over own pawn');
+      assert(findPiece(blockedRook.pieces, 'rr1')?.y === 9, 'illegal rook move should be ignored');
+    },
+  },
+  {
+    name: '落子造成困毙会结束并写入正确胜负原因',
+    run: () => {
+      const game = {
+        ...createInitialGame(),
+        pieces: [
+          piece({ id: 'rk', side: 'red', kind: 'king', x: 8, y: 9 }),
+          piece({ id: 'bk', side: 'black', kind: 'king', x: 4, y: 0 }),
+          piece({ id: 'rr-left', side: 'red', kind: 'rook', x: 3, y: 9 }),
+          piece({ id: 'rr-right', side: 'red', kind: 'rook', x: 5, y: 9 }),
+          piece({ id: 'rr-rank', side: 'red', kind: 'rook', x: 0, y: 2 }),
+        ],
+      };
+      const ended = applyMove(game, 'rr-rank', { x: 0, y: 1 });
+      assert(ended.phase === 'ended', 'stalemate should end the game');
+      assert(ended.result?.winner === 'red', 'red should win by stalemate');
+      assert(ended.result?.reason === 'stalemate', 'result should preserve stalemate reason');
+    },
+  },
+  {
     name: '复盘可以按步恢复棋盘状态',
     run: () => {
       let game = createInitialGame();
@@ -130,6 +210,17 @@ const tests: TestCase[] = [
       assert(getPieceAt(stepOne, { x: 2, y: 7 })?.id === 'rn1', 'red horse should be on first replay target');
       assert(findPiece(stepOne, 'bn1')?.x === 1, 'black horse should not move before step two');
       assert(getPieceAt(stepTwo, { x: 2, y: 2 })?.id === 'bn1', 'black horse should move at step two');
+    },
+  },
+  {
+    name: '复盘步数会限制在合法范围内',
+    run: () => {
+      let game = createInitialGame();
+      game = applyMove(game, 'rn1', { x: 2, y: 7 });
+      const beforeStart = buildReplayPieces(game.moveHistory, -1);
+      const afterEnd = buildReplayPieces(game.moveHistory, 99);
+      assert(findPiece(beforeStart, 'rn1')?.x === 1 && findPiece(beforeStart, 'rn1')?.y === 9, 'negative step should use initial board');
+      assert(getPieceAt(afterEnd, { x: 2, y: 7 })?.id === 'rn1', 'overflow step should use final replay board');
     },
   },
   {
@@ -170,6 +261,22 @@ const tests: TestCase[] = [
       assert(undone.turn === 'red', 'round undo should return to red turn');
       assert(findPiece(undone.pieces, 'rn1')?.x === 1 && findPiece(undone.pieces, 'rn1')?.y === 9, 'red horse should return');
       assert(findPiece(undone.pieces, 'bn1')?.x === 1 && findPiece(undone.pieces, 'bn1')?.y === 0, 'black horse should return');
+    },
+  },
+  {
+    name: '悔棋保留更早一轮的吃子和棋盘状态',
+    run: () => {
+      let game = createInitialGame();
+      game = applyMove(game, 'rc1', { x: 1, y: 0 });
+      game = applyMove(game, 'bn2', { x: 6, y: 2 });
+      game = applyMove(game, 'rp1', { x: 0, y: 5 });
+      game = applyMove(game, 'bp1', { x: 0, y: 4 });
+
+      const undone = undoLastRound(game);
+      assert(undone.moveHistory.length === 2, 'only the latest round should be removed');
+      assert(getPieceAt(undone.pieces, { x: 1, y: 0 })?.id === 'rc1', 'earlier cannon capture should remain');
+      assert(!findPiece(undone.pieces, 'bn1'), 'captured black horse should stay captured');
+      assert(getPieceAt(undone.pieces, { x: 6, y: 2 })?.id === 'bn2', 'earlier black reply should remain');
     },
   },
   {

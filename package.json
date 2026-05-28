@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc -p tsconfig.json && vite build",
-    "test": "tsc -p tsconfig.test.json && node .test-dist/tests/game-rules.test.js",
+    "test": "tsc -p tsconfig.test.json && node .test-dist/tests/game-rules.test.js && node .test-dist/tests/jieqi-rules.test.js && node .test-dist/tests/jieqi-lobby.test.js && node .test-dist/tests/puzzle-rules.test.js && node .test-dist/tests/xiangqi-lobby.test.js && node .test-dist/tests/puzzle-lobby.test.js",
     "preview": "vite preview"
   },
   "dependencies": {

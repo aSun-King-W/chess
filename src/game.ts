@@ -1,6 +1,6 @@
 export type Side = 'red' | 'black';
 export type GamePhase = 'playing' | 'ended';
-export type EndReason = 'checkmate' | 'resign' | 'timeout' | 'captured';
+export type EndReason = 'checkmate' | 'stalemate' | 'resign' | 'timeout' | 'captured';
 export type PieceKind = 'rook' | 'horse' | 'elephant' | 'advisor' | 'king' | 'cannon' | 'pawn';
 
 export type Position = {
@@ -131,7 +131,7 @@ export function createInitialGame(totalSeconds = INITIAL_TOTAL_SECONDS): GameSta
 
 export function selectPiece(game: GameState, pieceId: string): GameState {
   const piece = findPiece(game.pieces, pieceId);
-  if (!piece || piece.side !== game.turn) return game;
+  if (!piece || game.phase !== 'playing' || piece.side !== game.turn) return game;
   return {
     ...game,
     selectedPieceId: pieceId,
@@ -141,7 +141,9 @@ export function selectPiece(game: GameState, pieceId: string): GameState {
 
 export function applyMove(game: GameState, pieceId: string, to: Position): GameState {
   const piece = findPiece(game.pieces, pieceId);
-  if (!piece) return game;
+  if (!piece || game.phase !== 'playing' || piece.side !== game.turn) return game;
+  if (!hasPoint(getLegalMoves(game.pieces, piece), to)) return game;
+
   const captured = getPieceAt(game.pieces, to);
   const move: Move = {
     pieceId,
@@ -167,7 +169,8 @@ export function applyMove(game: GameState, pieceId: string, to: Position): GameS
   };
 
   if (capturedKing) return finishGame(nextGame, game.turn, 'captured');
-  if (isCheckmate(movedPieces, nextTurn)) return finishGame(nextGame, game.turn, 'checkmate');
+  const defeatReason = getDefeatReason(movedPieces, nextTurn);
+  if (defeatReason) return finishGame(nextGame, game.turn, defeatReason);
   return nextGame;
 }
 
@@ -349,7 +352,16 @@ function pawnMoves(piece: Piece): Position[] {
 }
 
 export function isCheckmate(pieces: Piece[], side: Side): boolean {
-  return isInCheck(pieces, side) && pieces.filter((piece) => piece.side === side).every((piece) => getLegalMoves(pieces, piece).length === 0);
+  return isInCheck(pieces, side) && !hasLegalMove(pieces, side);
+}
+
+export function getDefeatReason(pieces: Piece[], side: Side): EndReason | null {
+  if (hasLegalMove(pieces, side)) return null;
+  return isInCheck(pieces, side) ? 'checkmate' : 'stalemate';
+}
+
+export function hasLegalMove(pieces: Piece[], side: Side): boolean {
+  return pieces.some((piece) => piece.side === side && getLegalMoves(pieces, piece).length > 0);
 }
 
 export function isInCheck(pieces: Piece[], side: Side): boolean {
@@ -362,7 +374,8 @@ export function isInCheck(pieces: Piece[], side: Side): boolean {
 
 export function buildReplayPieces(moves: Move[], step: number): Piece[] {
   let pieces = clonePieces(startingPieces);
-  moves.slice(0, step).forEach((move) => {
+  const clampedStep = Math.max(0, Math.min(step, moves.length));
+  moves.slice(0, clampedStep).forEach((move) => {
     pieces = movePiece(pieces, move.pieceId, move.to);
   });
   return pieces;
