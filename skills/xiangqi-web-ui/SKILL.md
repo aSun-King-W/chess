@@ -35,6 +35,7 @@ Use this skill for user-facing web experience work.
 - Game settings may include UI-only toggles, but only move hints should affect rule behavior unless a stage says otherwise.
 - Result and replay screens must handle empty move history clearly.
 - A 0-move result should disable replay entry and show `暂无可复盘棋谱`; replay itself still needs an empty-state guard.
+- Replay should keep a dense information surface: board, summary/KPI strip, playback controls, game metadata, current move label, and scrollable move list should remain visible without page-level overflow.
 - AI difficulty, campaign level/stamina, and Gobang difficulty controls should be visible as real local controls, not hidden in copy-only panels.
 - Text must fit in buttons, cards, panels, and mobile viewports without overlap.
 
@@ -47,4 +48,4 @@ Use this skill for user-facing web experience work.
 
 - Run a browser walkthrough for major UI changes when a dev server is available.
 - Capture or inspect desktop and mobile views when layout, board sizing, dialogs, or result/replay screens change.
-- Run `PATH=.tools/node/bin:$PATH .tools/node/bin/npm run build` after component/type changes.
+- Run `npm run build` after component/type changes; if using bundled `.tools/node`, put `.tools/node/bin` on `PATH` first.

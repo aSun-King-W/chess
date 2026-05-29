@@ -27,6 +27,7 @@
 - Game intro, pause/menu, settings, chat, resign, and exit confirmation should not trap the player.
 - Result handles 0-move and non-empty histories correctly.
 - Replay controls step through available moves without board drift.
+- Replay summary/KPI, metadata, current move label, and move-list panels remain readable on desktop and collapse without horizontal overflow on mobile.
 - Puzzle campaign, daily puzzle, Jieqi, flip chess, Gobang difficulty, certification/rating, coin/minute arenas, Huashan, and friend-room local flows remain usable when touched.
 - Generated piece, board, mode-icon, and hidden-piece-back assets render legibly at desktop and mobile board/card sizes when asset usage changes.
 - Optional engine path must still let the user play when Pikafish worker/assets are unavailable.
@@ -40,7 +41,9 @@
 
 ## Build Checks
 
-- `PATH=.tools/node/bin:$PATH .tools/node/bin/npm test`
-- `PATH=.tools/node/bin:$PATH .tools/node/bin/npm run build`
+- `npm test`
+- `npm run build`
+
+If the shell uses this repo's bundled `.tools/node`, put `/Users/meteor/Documents/chess/.tools/node/bin` on `PATH` before running `npm`, as described in `README.md`.
 
 Record skipped checks in the final implementation response.

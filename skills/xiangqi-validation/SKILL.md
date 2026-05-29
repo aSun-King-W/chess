@@ -14,11 +14,13 @@ Use this skill whenever implementation needs verification or a stage is being cl
 - `docs/v1.1-validation.md` for prior validation notes.
 - `docs/implementation-plan2.md` for acceptance criteria.
 - `references/validation-checklist.md` for stage checks.
+- `README.md` for current run commands and local Node/npm setup.
 
 ## Default Checks
 
-- Run `PATH=.tools/node/bin:$PATH .tools/node/bin/npm test` after rule, replay, timer, AI/engine adapter, undo, puzzle, Jieqi, flip chess, arena/session, archive, scoring, or Gobang logic changes.
-- Run `PATH=.tools/node/bin:$PATH .tools/node/bin/npm run build` after TypeScript, React component, route, state, or exported type changes.
+- Run `npm test` after rule, replay, timer, AI/engine adapter, undo, puzzle, Jieqi, flip chess, arena/session, archive, scoring, or Gobang logic changes.
+- Run `npm run build` after TypeScript, React component, route, state, or exported type changes.
+- If using the bundled `.tools/node`, follow `README.md`: put `.tools/node/bin` on `PATH` before invoking `npm`.
 - Use browser validation for meaningful UI/layout changes, especially board sizing, dialogs, result/replay, and mobile behavior.
 
 ## Browser Walkthroughs

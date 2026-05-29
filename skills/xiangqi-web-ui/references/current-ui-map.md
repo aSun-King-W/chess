@@ -10,7 +10,7 @@
 - Local feature surfaces: certification, rating/evaluation, coin arena, minute arena, Huashan, friend room, Jieqi arena, and extended puzzle flows can appear inside the same app shell when backed by typed local data modules.
 - `game`: active game board and controls.
 - `result`: post-game result.
-- `replay`: replay and move list.
+- `replay`: replay board plus summary/KPI strip, playback controls, metadata, current move label, and move list.
 - `profile`: profile/me content.
 
 ## Expected UI Behaviors
@@ -24,7 +24,8 @@
 - AI and Gobang difficulty selectors should update local session behavior and remain understandable in the current shell.
 - Game screen should expose board, timers, player info, recent move, menu, chat, settings, pause/intro state, resign/exit confirmation, and unavailable-action feedback.
 - Result should show enough match detail to feel like a real game result, including winner, reason, timing, points/progress, actions, and replay availability.
-- Replay should provide board stepping, move information, playback controls, and empty-state handling.
+- Replay should provide board stepping, move information, playback controls, summary KPIs, metadata, current move label, move-list progress, and empty-state handling.
+- Replay layout can use dense cards on desktop, but must collapse to one column on constrained/mobile widths without horizontal overflow.
 - Profile and non-play bottom tabs can remain polished shells until the user asks to implement backend/social/account features.
 
 ## Visual Checks

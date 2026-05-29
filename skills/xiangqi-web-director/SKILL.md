@@ -18,6 +18,7 @@ Use this as the first skill for project-level work on the Xiangqi web app.
 - If the user says only "board game" or "chess game" without enough context, clarify whether they mean Chinese chess before using Xiangqi-specific guidance.
 - Prefer local playable flows over static mockups: home, lobby, match, game, result, replay, and mode shells should remain connected through typed local data.
 - Read current repo state before deciding: inspect `src/App.tsx`, `src/game.ts`, `src/styles.css`, tests, and the relevant docs.
+- Use `README.md` as the current run-command and project-structure source of truth.
 - Use module skills for detailed work instead of expanding this director into a large implementation manual.
 
 ## Module Routing
@@ -35,13 +36,14 @@ Use this as the first skill for project-level work on the Xiangqi web app.
 3. Preserve the established local shell and first-level page flow unless the user explicitly asks to restructure it.
 4. Keep the implementation scoped to the active stage.
 5. Verify with the smallest meaningful mix of unit tests, build checks, and browser/manual path checks.
-6. Prefer the repo's local Node/npm command form when running checks: `PATH=.tools/node/bin:$PATH .tools/node/bin/npm test` and `PATH=.tools/node/bin:$PATH .tools/node/bin/npm run build`.
+6. Follow `README.md` for commands: use `npm test` and `npm run build`; if using bundled `.tools/node`, put `.tools/node/bin` on `PATH` before invoking `npm`.
 7. At stage completion, update the relevant repository-local skill and maintainer inbox if the work produced reusable knowledge.
 8. If any skill description or trigger boundary changed, use the maintainer trigger matrix before closing the stage.
 
 ## Source Documents
 
 - Current baseline plan: `docs/implementation-plan.md`
+- Current run/project overview: `README.md`
 - V1.1 enhancement plan: `docs/implementation-plan2.md`
 - Product observations: `docs/tiantian-xiangqi-observations.md`
 - Validation notes: `docs/v1.1-validation.md`

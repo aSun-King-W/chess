@@ -31,7 +31,6 @@ import {
   Share2,
   ShoppingBasket,
   SkipBack,
-  SkipForward,
   Star,
   Swords,
   Trophy,
@@ -5833,6 +5832,7 @@ function ReplayScreen({
   const resultLabel = result ? `${resultWinner} · ${resultReason(result.reason, result.winner)}` : '暂无结果';
   const resultDate = formatResultDate(result?.endedAt);
   const sessionRows = getPlaySessionReplayRows(playSession);
+  const currentMoveLabel = recentMove?.notation ?? '尚未开始';
 
   return (
     <section className="replay-layout">
@@ -5847,62 +5847,73 @@ function ReplayScreen({
         </div>
       </div>
       <aside className="notation-panel">
-        <div className="section-title">
-          <p className="eyebrow">棋谱信息 · {clampedStep}/{moves.length}</p>
-          <h2>{playSession.label}棋谱</h2>
+        <div className="replay-summary-card">
+          <div className="section-title">
+            <p className="eyebrow">棋谱信息 · {clampedStep}/{moves.length}</p>
+            <h2>{playSession.label}棋谱</h2>
+          </div>
+          <div className="replay-session-tags" aria-label="棋谱标签">
+            {playSession.replayTags.map((tag) => (
+              <span key={tag}>{tag}</span>
+            ))}
+          </div>
+          <div className="replay-kpis" aria-label="复盘进度">
+            <span>
+              <small>当前</small>
+              <strong>{clampedStep}/{moves.length}</strong>
+            </span>
+            <span>
+              <small>局面</small>
+              <strong>{currentMoveLabel}</strong>
+            </span>
+            <span>
+              <small>结果</small>
+              <strong>{resultLabel}</strong>
+            </span>
+          </div>
+          <div className="replay-controls">
+            <button onClick={() => onStep(Math.max(0, clampedStep - 1))} disabled={!hasMoves || clampedStep === 0}>
+              <ChevronLeft size={18} />
+              上一步
+            </button>
+            <button className="primary-action" onClick={onTogglePlay} disabled={!hasMoves}>
+              {playing ? <Pause size={18} /> : <Play size={18} />}
+              {playing ? '暂停' : '播放'}
+            </button>
+            <button onClick={() => onStep(Math.min(moves.length, clampedStep + 1))} disabled={!hasMoves || clampedStep === moves.length}>
+              下一步
+              <ChevronRight size={18} />
+            </button>
+          </div>
         </div>
-        <div className="replay-session-tags" aria-label="棋谱标签">
-          {playSession.replayTags.map((tag) => (
-            <span key={tag}>{tag}</span>
-          ))}
+        <div className="replay-meta-card">
+          <strong className="replay-card-title">对局信息</strong>
+          <div className="replay-meta-grid">
+            {sessionRows.map((row) => (
+              <InfoRow title={row.title} detail={row.detail} key={row.title} />
+            ))}
+            <InfoRow title="红方" detail="我方 · 业余1级" />
+            <InfoRow title="黑方" detail={`${opponent.name} · ${opponent.rank}`} />
+            <InfoRow title="结果" detail={resultLabel} />
+            <InfoRow title="日期" detail={resultDate} />
+            <InfoRow title="评论" detail="暂无棋友评论" />
+            <InfoRow title="注释" detail={currentMoveLabel} />
+          </div>
         </div>
-        <div className="replay-meta-grid">
-          {sessionRows.map((row) => (
-            <InfoRow title={row.title} detail={row.detail} key={row.title} />
-          ))}
-          <InfoRow title="红方" detail="我方 · 业余1级" />
-          <InfoRow title="黑方" detail={`${opponent.name} · ${opponent.rank}`} />
-          <InfoRow title="结果" detail={resultLabel} />
-          <InfoRow title="日期" detail={resultDate} />
-          <InfoRow title="评论" detail="暂无棋友评论" />
-          <InfoRow title="注释" detail={recentMove?.notation ?? '暂无注释'} />
+        <div className="replay-moves-card">
+          <div className="replay-moves-head">
+            <strong className="replay-card-title">走子记录</strong>
+            <span>{currentMoveLabel}</span>
+          </div>
+          <ol className="replay-move-list">
+            {moves.map((move, index) => (
+              <li className={index < clampedStep ? 'is-played' : ''} key={`${move.pieceId}-${index}`}>
+                {move.notation}
+              </li>
+            ))}
+          </ol>
+          {!hasMoves && <InfoRow title="暂无可复盘棋谱" detail="本局未产生走子，棋盘保留初始空状态" />}
         </div>
-        <ol>
-          {moves.map((move, index) => (
-            <li className={index < clampedStep ? 'is-played' : ''} key={`${move.pieceId}-${index}`}>
-              {index + 1}. {move.notation}
-            </li>
-          ))}
-        </ol>
-        {!hasMoves && <InfoRow title="暂无可复盘棋谱" detail="本局未产生走子，棋盘保留初始空状态" />}
-        <div className="replay-controls">
-          <button onClick={() => onToast('暂无变着', 'info')} disabled={!hasMoves}>
-            <SkipBack size={18} />
-            上变
-          </button>
-          <button onClick={() => onStep(Math.max(0, clampedStep - 1))} disabled={!hasMoves || clampedStep === 0}>
-            <ChevronLeft size={18} />
-            上一步
-          </button>
-          <button className="primary-action" onClick={onTogglePlay} disabled={!hasMoves}>
-            {playing ? <Pause size={18} /> : <Play size={18} />}
-            {playing ? '暂停' : '播放'}
-          </button>
-          <button onClick={() => onStep(Math.min(moves.length, clampedStep + 1))} disabled={!hasMoves || clampedStep === moves.length}>
-            下一步
-            <ChevronRight size={18} />
-          </button>
-          <button onClick={() => onToast('暂无变着', 'info')} disabled={!hasMoves}>
-            下变
-            <SkipForward size={18} />
-          </button>
-        </div>
-        <button className="full-width" onClick={() => onToast('复制棋谱功能为本地占位', 'info')}>
-          复制棋谱
-        </button>
-        <button className="full-width" onClick={onBack}>
-          返回结算
-        </button>
       </aside>
     </section>
   );

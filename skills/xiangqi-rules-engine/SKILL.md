@@ -43,5 +43,5 @@ Use this skill for game logic. Keep UI behavior out unless it affects the game m
 ## Validation
 
 - Add focused rule tests for new logic before relying on browser behavior.
-- Run `PATH=.tools/node/bin:$PATH .tools/node/bin/npm test` when rules or replay behavior changes.
-- Run `PATH=.tools/node/bin:$PATH .tools/node/bin/npm run build` for type safety when exported types change.
+- Run `npm test` when rules, engine, or replay behavior changes; if using bundled `.tools/node`, put `.tools/node/bin` on `PATH` first.
+- Run `npm run build` for type safety when exported types change.

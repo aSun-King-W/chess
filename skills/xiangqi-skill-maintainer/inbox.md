@@ -4,12 +4,14 @@ This inbox collects repeated preferences and implementation lessons before they 
 
 ## Absorbed
 
+- `absorbed` 2026-05-29: README now documents the canonical run workflow: use normal `npm` commands, and when using bundled `.tools/node`, add `.tools/node/bin` to `PATH` first. Absorbed into `xiangqi-web-director`, `xiangqi-rules-engine`, and `xiangqi-validation`.
+- `absorbed` 2026-05-29: Replay page was redesigned into a dense board + summary/KPI + metadata + current-move + move-list layout; future replay UI changes should preserve information density while collapsing safely on mobile. Absorbed into `xiangqi-web-ui` and validation references.
 - `absorbed` 2026-05-29: Today added optional Pikafish-backed AI through `src/xiangqiEngine.ts`; engine output must be FEN/UCI adapted, locally legal-move validated, timeout-safe, and always backed by local fallback. Absorbed into `xiangqi-rules-engine`, `xiangqi-validation`, `xiangqi-web-director`, and `xiangqi-scope-guardrails`.
 - `absorbed` 2026-05-29: Core rules now distinguish checkmate from stalemate/困毙, reject out-of-turn/illegal `applyMove` calls, clamp replay steps, and support configurable opening/regular step times. Absorbed into `xiangqi-rules-engine` and validation references.
 - `absorbed` 2026-05-29: Puzzle work expanded into a campaign-map flow with stamina, locked/current/completed levels, result overlays, and ranking panel. Absorbed into `xiangqi-game-modes`, `xiangqi-web-ui`, and validation references.
 - `absorbed` 2026-05-29: Gobang moved to a 15x15 textured board with selectable difficulty and stronger AI heuristics that win/block immediate threats. Absorbed into `xiangqi-game-modes`, `xiangqi-rules-engine`, and validation references.
 - `absorbed` 2026-05-27: The base React/Vite framework and optimized first-level pages are now the stable local baseline; future work should preserve the shell unless explicitly restructuring. Absorbed into `xiangqi-web-director`, `xiangqi-web-ui`, and validation references.
-- `absorbed` 2026-05-27: Project checks should use the repo-local Node/npm command form from README. Absorbed into `xiangqi-web-director`, `xiangqi-rules-engine`, and `xiangqi-validation`.
+- `absorbed` 2026-05-27, updated 2026-05-29: Project checks should follow the command form currently documented in `README.md`; use normal `npm` commands after ensuring the desired Node/npm is on `PATH`. Absorbed into `xiangqi-web-director`, `xiangqi-rules-engine`, and `xiangqi-validation`.
 - `absorbed` 2026-05-27: Current project target is web first; Mini Program and native app work stay out of the main path until explicitly requested. Absorbed into `xiangqi-web-director` and `xiangqi-scope-guardrails`.
 - `absorbed` 2026-05-27: Maintain skills inside the repository first, then create a polished global `xiangqi-game-builder` skill after project completion. Absorbed into `xiangqi-web-director` and `xiangqi-skill-maintainer`.
 - `absorbed` 2026-05-27: Use multiple module skills during project development, then consolidate into a final total skill later. Absorbed into `xiangqi-web-director`.
