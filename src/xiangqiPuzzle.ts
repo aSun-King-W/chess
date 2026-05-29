@@ -1,10 +1,13 @@
 import {
   applyPuzzleMove,
+  applyPuzzleFreeMove,
   createPuzzleSession,
   dailyPuzzle,
+  getPuzzleLegalMoves,
   revealPuzzleHint,
   resetPuzzleSession,
   tickPuzzleSession,
+  undoPuzzleRound,
 } from './puzzle.js';
 import type { Puzzle, PuzzleApplyResult, PuzzleHint, PuzzleSession, PuzzleSolutionMove } from './puzzle.js';
 
@@ -54,6 +57,7 @@ export type XiangqiPuzzleAttempt = {
   startedAt: string;
   updatedAt: string;
   restarts: number;
+  undos: number;
   impossiblePrompt: string | null;
   latestMessage: string;
   comments: XiangqiPuzzleComment[];
@@ -168,7 +172,7 @@ export const xiangqiPuzzleEntries: XiangqiPuzzleEntry[] = [
   {
     id: 'daily',
     title: '每日残局',
-    subtitle: '今日一题，按最优路线过关',
+    subtitle: '今日一题，将死过关',
     sceneLabel: '每日一题',
     badge: '今日',
     ticketLabel: '消耗体力 1',
@@ -299,6 +303,7 @@ export function createXiangqiPuzzleAttempt(
     startedAt: now,
     updatedAt: now,
     restarts: 0,
+    undos: 0,
     impossiblePrompt: null,
     latestMessage: '准备开始残局挑战。',
     comments: options.comments ? [...options.comments] : [...defaultComments],
@@ -331,9 +336,10 @@ export function applyXiangqiPuzzleAttemptMove(
   attempt: XiangqiPuzzleAttempt,
   move: XiangqiPuzzleMoveInput,
   now = new Date().toISOString(),
+  options: { autoReply?: boolean } = {},
 ): XiangqiPuzzleMoveResult {
   if (attempt.status === 'ready') {
-    return applyXiangqiPuzzleAttemptMove(puzzle, startXiangqiPuzzleAttempt(attempt, now), move, now);
+    return applyXiangqiPuzzleAttemptMove(puzzle, startXiangqiPuzzleAttempt(attempt, now), move, now, options);
   }
 
   if (attempt.status !== 'playing') {
@@ -345,25 +351,105 @@ export function applyXiangqiPuzzleAttemptMove(
     };
   }
 
-  const result = applyPuzzleMove(puzzle, attempt.session, move);
-  const impossible = result.verdict === 'incorrect' && result.session.status === 'failed';
-  const solved = result.verdict === 'success';
+  const result = puzzle.mode === 'free-mate'
+    ? applyPuzzleFreeMove(puzzle, attempt.session, move)
+    : applyPuzzleMove(puzzle, attempt.session, move);
+  const autoReply = options.autoReply !== false && result.verdict === 'correct'
+    ? puzzle.mode === 'free-mate'
+      ? applyPuzzleComputerReply(puzzle, result.session)
+      : applyPuzzleAutoReplies(puzzle, result.session)
+    : null;
+  const judgedSession = autoReply?.session ?? result.session;
+  const finalVerdict = autoReply?.verdict ?? result.verdict;
+  const impossible = judgedSession.status === 'failed';
+  const solved = finalVerdict === 'success';
+  const latestMessage = solved
+    ? '挑战成功，已生成成绩卡。'
+    : impossible
+      ? '当前已无法过关，是否重来。'
+      : autoReply?.message ?? result.message;
   const nextAttempt: XiangqiPuzzleAttempt = {
     ...attempt,
     status: solved ? 'solved' : impossible ? 'impossible' : 'playing',
-    session: result.session,
+    session: judgedSession,
     updatedAt: now,
     impossiblePrompt: impossible ? '当前已无法过关，是否重来' : null,
-    latestMessage: solved ? '挑战成功，已生成成绩卡。' : impossible ? '当前已无法过关，是否重来。' : result.message,
+    latestMessage,
   };
 
   return {
     attempt: nextAttempt,
-    verdict: result.verdict,
+    verdict: finalVerdict,
     message: nextAttempt.latestMessage,
     impossible,
-    expected: result.expected,
+    expected: autoReply?.expected ?? result.expected,
   };
+}
+
+function applyPuzzleAutoReplies(
+  puzzle: Puzzle,
+  session: PuzzleSession,
+): Pick<PuzzleApplyResult, 'session' | 'verdict' | 'message' | 'expected'> | null {
+  let current = session;
+  let replies: string[] = [];
+  let finalVerdict: PuzzleApplyResult['verdict'] = 'correct';
+  let finalExpected: PuzzleSolutionMove | undefined;
+
+  while (current.status === 'playing') {
+    const expected = puzzle.solutionLine[current.progressIndex];
+    const piece = expected ? current.pieces.find((item) => item.id === expected.pieceId) : undefined;
+    if (!expected || !piece || piece.side === puzzle.sideToMove) break;
+
+    const reply = applyPuzzleMove(puzzle, current, expected);
+    current = reply.session;
+    finalVerdict = reply.verdict;
+    finalExpected = reply.expected;
+    replies = [...replies, expected.note ?? reply.move?.notation ?? '对方应手'];
+    if (reply.verdict === 'failure' || reply.verdict === 'incorrect' || reply.verdict === 'success') break;
+  }
+
+  if (replies.length === 0) return null;
+  return {
+    session: current,
+    verdict: finalVerdict,
+    expected: finalExpected,
+    message: current.status === 'solved'
+      ? '挑战成功，已生成成绩卡。'
+      : `对方已应：${replies.join('，')}。继续找红方下一手。`,
+  };
+}
+
+function applyPuzzleComputerReply(
+  puzzle: Puzzle,
+  session: PuzzleSession,
+): Pick<PuzzleApplyResult, 'session' | 'verdict' | 'message' | 'expected'> | null {
+  if (session.status !== 'playing' || session.turn === puzzle.sideToMove) return null;
+
+  const move = choosePuzzleReplyMove(session);
+  if (!move) return null;
+
+  const reply = applyPuzzleFreeMove(puzzle, session, move);
+  return {
+    session: reply.session,
+    verdict: reply.verdict,
+    expected: reply.expected,
+    message: reply.session.status === 'failed'
+      ? '黑方将死我方，挑战失败。'
+      : `黑方已应：${reply.move?.notation ?? '应手'}。继续寻找杀法。`,
+  };
+}
+
+function choosePuzzleReplyMove(session: PuzzleSession): XiangqiPuzzleMoveInput | null {
+  const pieces = session.pieces.filter((piece) => piece.side === session.turn);
+  const candidates = pieces.flatMap((piece) => (
+    getPuzzleLegalMoves(session, piece.id).map((to) => ({ pieceId: piece.id, to }))
+  ));
+  if (candidates.length === 0) return null;
+
+  return candidates.find((move) => {
+    const target = session.pieces.find((piece) => piece.x === move.to.x && piece.y === move.to.y);
+    return target?.kind === 'king';
+  }) ?? candidates[0];
 }
 
 export function revealXiangqiPuzzleHint(
@@ -419,6 +505,29 @@ export function restartXiangqiPuzzleAttempt(
     restarts: attempt.restarts + 1,
     impossiblePrompt: null,
     latestMessage: '已重来，本次尝试继续记录提示与重来次数。',
+  };
+}
+
+export function undoXiangqiPuzzleAttemptStep(
+  puzzle: Puzzle,
+  attempt: XiangqiPuzzleAttempt,
+  now = new Date().toISOString(),
+): XiangqiPuzzleAttempt {
+  if (attempt.session.moveHistory.length === 0) {
+    return {
+      ...attempt,
+      latestMessage: '暂无可悔棋步数。',
+    };
+  }
+
+  return {
+    ...attempt,
+    status: 'playing',
+    session: undoPuzzleRound(puzzle, attempt.session),
+    updatedAt: now,
+    undos: attempt.undos + 1,
+    impossiblePrompt: null,
+    latestMessage: '已悔棋一轮。',
   };
 }
 

@@ -56,7 +56,7 @@ export const BOARD_HEIGHT = 10;
 export const INITIAL_TOTAL_SECONDS = 15 * 60;
 export const INITIAL_STEP_SECONDS = 90;
 export const OPENING_STEP_SECONDS = 30;
-export const gobangSize = 11;
+export const gobangSize = 15;
 
 const files = ['一', '二', '三', '四', '五', '六', '七', '八', '九'];
 
@@ -210,8 +210,12 @@ export function finishGame(game: GameState, winner: Side, reason: EndReason): Ga
 }
 
 export function chooseAiMove(pieces: Piece[], turnIndex: number): Pick<Move, 'pieceId' | 'to'> | null {
+  return chooseScoredAiMove(pieces, 'black', turnIndex);
+}
+
+function chooseScoredAiMove(pieces: Piece[], side: Side, turnIndex: number): Pick<Move, 'pieceId' | 'to'> | null {
   const candidates = pieces
-    .filter((piece) => piece.side === 'black')
+    .filter((piece) => piece.side === side)
     .flatMap((piece) =>
       getLegalMoves(pieces, piece).map((to) => ({
         pieceId: piece.id,
@@ -224,19 +228,80 @@ export function chooseAiMove(pieces: Piece[], turnIndex: number): Pick<Move, 'pi
 
   if (candidates.length === 0) return null;
 
-  return [...candidates].sort((a, b) => scoreAiMove(b, turnIndex) - scoreAiMove(a, turnIndex))[0];
+  return [...candidates].sort((a, b) => scoreAiMove(b, side, turnIndex) - scoreAiMove(a, side, turnIndex))[0];
 }
 
 function scoreAiMove(
   candidate: { to: Position; capture?: Piece; piece: Piece; nextPieces: Piece[] },
+  side: Side,
   turnIndex: number,
 ): number {
+  const rival = opposite(side);
   const captureScore = candidate.capture ? pieceValues[candidate.capture.kind] * 12 : 0;
-  const mateScore = isCheckmate(candidate.nextPieces, 'red') ? 10000 : 0;
-  const checkScore = isInCheck(candidate.nextPieces, 'red') ? 80 : 0;
-  const advanceScore = (candidate.to.y - candidate.piece.y) * 2;
+  const mateScore = isCheckmate(candidate.nextPieces, rival) ? 100000 : 0;
+  const checkScore = isInCheck(candidate.nextPieces, rival) ? 700 : 0;
+  const materialScore = evaluateMaterial(candidate.nextPieces, side) * 2;
+  const mobilityScore = countLegalMoves(candidate.nextPieces, side) - countLegalMoves(candidate.nextPieces, rival);
+  const hangingPenalty = isSquareAttacked(candidate.nextPieces, candidate.to, rival)
+    ? pieceValues[candidate.piece.kind] * 8
+    : 0;
+  const replyCapturePenalty = bestCaptureValue(candidate.nextPieces, rival) * 5;
+  const mateThreatPenalty = hasImmediateMate(candidate.nextPieces, rival, side) ? 50000 : 0;
+  const advance = side === 'black' ? candidate.to.y - candidate.piece.y : candidate.piece.y - candidate.to.y;
+  const advanceScore = candidate.piece.kind === 'pawn' ? advance * 8 : advance * 2;
+  const centerScore = 4 - Math.abs(4 - candidate.to.x);
   const varietyScore = (candidate.to.x + turnIndex) % 3;
-  return mateScore + checkScore + captureScore + advanceScore + varietyScore;
+  return (
+    mateScore +
+    checkScore +
+    captureScore +
+    materialScore +
+    mobilityScore +
+    advanceScore +
+    centerScore +
+    varietyScore -
+    hangingPenalty -
+    replyCapturePenalty -
+    mateThreatPenalty
+  );
+}
+
+function evaluateMaterial(pieces: Piece[], side: Side): number {
+  return pieces.reduce((total, piece) => {
+    const value = pieceValues[piece.kind];
+    return total + (piece.side === side ? value : -value);
+  }, 0);
+}
+
+function countLegalMoves(pieces: Piece[], side: Side): number {
+  return pieces
+    .filter((piece) => piece.side === side)
+    .reduce((total, piece) => total + getLegalMoves(pieces, piece).length, 0);
+}
+
+function bestCaptureValue(pieces: Piece[], side: Side): number {
+  let best = 0;
+  pieces
+    .filter((piece) => piece.side === side)
+    .forEach((piece) => {
+      getLegalMoves(pieces, piece).forEach((to) => {
+        const captured = getPieceAt(pieces, to);
+        if (captured?.side !== side) best = Math.max(best, captured ? pieceValues[captured.kind] : 0);
+      });
+    });
+  return best;
+}
+
+function hasImmediateMate(pieces: Piece[], attacker: Side, defender: Side): boolean {
+  return pieces
+    .filter((piece) => piece.side === attacker)
+    .some((piece) => getLegalMoves(pieces, piece).some((to) => isCheckmate(movePiece(pieces, piece.id, to), defender)));
+}
+
+function isSquareAttacked(pieces: Piece[], position: Position, attacker: Side): boolean {
+  return pieces
+    .filter((piece) => piece.side === attacker)
+    .some((piece) => getLegalMoves(pieces, piece).some((to) => samePoint(to, position)));
 }
 
 export function getLegalMoves(pieces: Piece[], piece: Piece): Position[] {
@@ -477,22 +542,137 @@ export function placeStone(board: number[][], x: number, y: number, stone: numbe
   return board.map((row, rowIndex) => row.map((cell, columnIndex) => (rowIndex === y && columnIndex === x ? stone : cell)));
 }
 
-export function chooseGobangMove(board: number[][], lastX: number, lastY: number): Position | null {
-  const nearby: Position[] = [];
-  for (let radius = 1; radius <= 2; radius += 1) {
-    for (let y = lastY - radius; y <= lastY + radius; y += 1) {
-      for (let x = lastX - radius; x <= lastX + radius; x += 1) {
-        if (x >= 0 && x < gobangSize && y >= 0 && y < gobangSize && board[y][x] === 0) nearby.push({ x, y });
-      }
-    }
-    if (nearby.length > 0) return nearby[Math.floor(nearby.length / 2)];
+export type GobangDifficulty = 'easy' | 'normal' | 'hard';
+
+export function chooseGobangMove(board: number[][], lastX: number, lastY: number, difficulty: GobangDifficulty = 'hard'): Position | null {
+  if (difficulty === 'easy') return chooseEasyGobangMove(board, lastX, lastY);
+
+  const winNow = findGobangImmediateMove(board, 2);
+  if (winNow) return winNow;
+  const blockNow = findGobangImmediateMove(board, 1);
+  if (blockNow) return blockNow;
+
+  const candidates = getGobangCandidates(board, { x: lastX, y: lastY });
+  if (difficulty === 'normal') {
+    return chooseScoredGobangMove(board, candidates, 0.82, 0);
   }
+
+  return chooseScoredGobangMove(board, candidates, 1.05, 0.22);
+}
+
+function chooseEasyGobangMove(board: number[][], lastX: number, lastY: number): Position | null {
+  const winNow = findGobangImmediateMove(board, 2);
+  if (winNow) return winNow;
+
+  const candidates = getGobangCandidates(board, { x: lastX, y: lastY });
+  let bestMove: Position | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  candidates.forEach((candidate) => {
+    const lastMoveOffset = Math.abs(candidate.x - lastX) + Math.abs(candidate.y - lastY);
+    const centerOffset = Math.abs(candidate.x - Math.floor(gobangSize / 2)) + Math.abs(candidate.y - Math.floor(gobangSize / 2));
+    const score = scoreGobangMove(board, candidate, 2) * 0.42 - lastMoveOffset * 6 - centerOffset;
+    if (score > bestScore) {
+      bestScore = score;
+      bestMove = candidate;
+    }
+  });
+  return bestMove;
+}
+
+function chooseScoredGobangMove(board: number[][], candidates: Position[], defenseWeight: number, replyPenaltyWeight: number): Position | null {
+  let bestMove: Position | null = null;
+  let bestScore = Number.NEGATIVE_INFINITY;
+  candidates.forEach((candidate) => {
+    const attackScore = scoreGobangMove(board, candidate, 2);
+    const defenseScore = scoreGobangMove(board, candidate, 1) * defenseWeight;
+    const afterMove = replyPenaltyWeight > 0 ? placeStone(board, candidate.x, candidate.y, 2) : null;
+    const replyPenalty = afterMove
+      ? Math.max(0, ...getGobangCandidates(afterMove, candidate).map((reply) => scoreGobangMove(afterMove, reply, 1))) * replyPenaltyWeight
+      : 0;
+    const centerOffset = Math.abs(candidate.x - Math.floor(gobangSize / 2)) + Math.abs(candidate.y - Math.floor(gobangSize / 2));
+    const score = attackScore + defenseScore - replyPenalty - centerOffset * 2;
+    if (score > bestScore) {
+      bestScore = score;
+      bestMove = candidate;
+    }
+  });
+  return bestMove;
+}
+
+function findGobangImmediateMove(board: number[][], stone: number): Position | null {
+  return getGobangCandidates(board).find((candidate) => hasGobangWin(placeStone(board, candidate.x, candidate.y, stone), stone)) ?? null;
+}
+
+function getGobangCandidates(board: number[][], lastMove?: Position): Position[] {
+  const candidates: Position[] = [];
+  const seen = new Set<string>();
+  let hasStone = false;
+
   for (let y = 0; y < gobangSize; y += 1) {
     for (let x = 0; x < gobangSize; x += 1) {
-      if (board[y][x] === 0) return { x, y };
+      if (board[y][x] === 0) continue;
+      hasStone = true;
+      for (let dy = -2; dy <= 2; dy += 1) {
+        for (let dx = -2; dx <= 2; dx += 1) {
+          const nextX = x + dx;
+          const nextY = y + dy;
+          const key = `${nextX}-${nextY}`;
+          if (!isGobangPoint(nextX, nextY) || board[nextY][nextX] !== 0 || seen.has(key)) continue;
+          candidates.push({ x: nextX, y: nextY });
+          seen.add(key);
+        }
+      }
     }
   }
-  return null;
+
+  if (!hasStone) return [{ x: Math.floor(gobangSize / 2), y: Math.floor(gobangSize / 2) }];
+  candidates.sort((a, b) => {
+    const aDistance = lastMove ? Math.abs(a.x - lastMove.x) + Math.abs(a.y - lastMove.y) : 0;
+    const bDistance = lastMove ? Math.abs(b.x - lastMove.x) + Math.abs(b.y - lastMove.y) : 0;
+    return aDistance - bDistance;
+  });
+  return candidates;
+}
+
+function scoreGobangMove(board: number[][], point: Position, stone: number): number {
+  const directions = [
+    { x: 1, y: 0 },
+    { x: 0, y: 1 },
+    { x: 1, y: 1 },
+    { x: 1, y: -1 },
+  ];
+  return directions.reduce((total, direction) => total + scoreGobangLine(board, point, stone, direction), 0);
+}
+
+function scoreGobangLine(board: number[][], point: Position, stone: number, direction: Position): number {
+  const forward = countGobangLine(board, point, stone, direction);
+  const backward = countGobangLine(board, point, stone, { x: -direction.x, y: -direction.y });
+  const count = forward.count + backward.count + 1;
+  const openEnds = Number(forward.open) + Number(backward.open);
+  if (count >= 5) return 1_000_000;
+  if (count === 4 && openEnds === 2) return 90_000;
+  if (count === 4 && openEnds === 1) return 20_000;
+  if (count === 3 && openEnds === 2) return 5_000;
+  if (count === 3 && openEnds === 1) return 900;
+  if (count === 2 && openEnds === 2) return 260;
+  if (count === 2 && openEnds === 1) return 80;
+  return openEnds === 2 ? 18 : 4;
+}
+
+function countGobangLine(board: number[][], point: Position, stone: number, direction: Position): { count: number; open: boolean } {
+  let count = 0;
+  let x = point.x + direction.x;
+  let y = point.y + direction.y;
+  while (isGobangPoint(x, y) && board[y][x] === stone) {
+    count += 1;
+    x += direction.x;
+    y += direction.y;
+  }
+  return { count, open: isGobangPoint(x, y) && board[y][x] === 0 };
+}
+
+function isGobangPoint(x: number, y: number): boolean {
+  return x >= 0 && x < gobangSize && y >= 0 && y < gobangSize;
 }
 
 export function hasGobangWin(board: number[][], stone: number): boolean {

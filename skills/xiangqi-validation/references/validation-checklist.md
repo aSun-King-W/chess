@@ -6,11 +6,16 @@
 - Own-piece capture rejection.
 - Self-check prevention.
 - Check and checkmate detection.
+- Stalemate/困毙 detection and result reason.
 - Captured king, resignation, timeout, and normal result data.
 - Replay reconstruction from move history.
+- FEN/UCI conversion, engine bestmove validation, difficulty behavior, timeout/failure fallback, and local search evaluation when engine code changes.
 - Undo behavior when implemented or changed.
 - Jieqi reveal behavior when implemented or changed.
-- Gobang win detection when implemented or changed.
+- Puzzle attempt, hint, scoring, record, comment, and settlement helpers when implemented or changed.
+- Flip chess reveal, opening choice, capture hierarchy, trophy, settlement, and safe placeholder helpers when implemented or changed.
+- Coin arena, minute arena, certification, rating, Huashan, friend-room, and shared play-session helpers when their rows/admissions/results/archives change.
+- Gobang difficulty, immediate win/block choice, and win detection when implemented or changed.
 
 ## UI Flow Checks
 
@@ -22,7 +27,9 @@
 - Game intro, pause/menu, settings, chat, resign, and exit confirmation should not trap the player.
 - Result handles 0-move and non-empty histories correctly.
 - Replay controls step through available moves without board drift.
-- Puzzle, Jieqi, flip chess, and Gobang minimum flows remain usable when touched.
+- Puzzle campaign, daily puzzle, Jieqi, flip chess, Gobang difficulty, certification/rating, coin/minute arenas, Huashan, and friend-room local flows remain usable when touched.
+- Generated piece, board, mode-icon, and hidden-piece-back assets render legibly at desktop and mobile board/card sizes when asset usage changes.
+- Optional engine path must still let the user play when Pikafish worker/assets are unavailable.
 
 ## Responsive Checks
 

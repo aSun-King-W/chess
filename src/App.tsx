@@ -24,6 +24,7 @@ import {
   Pause,
   PenLine,
   Play,
+  RefreshCcw,
   RotateCcw,
   ScrollText,
   Settings,
@@ -47,13 +48,13 @@ import {
   applyMove,
   buildReplayPieces,
   canUndoRound,
-  chooseAiMove,
   chooseGobangMove,
   createGobangBoard,
   createInitialGame,
   findPiece,
   finishGame,
   getDefeatReason,
+  getLegalMoves,
   getPieceAt,
   gobangSize,
   hasGobangWin,
@@ -68,9 +69,11 @@ import {
   undoLastRound,
 } from './game';
 import type { EndReason, GameResult, GameState, Move, Piece, PieceKind, Position, Side } from './game';
+import type { GobangDifficulty } from './game';
+import { chooseComputerMove } from './xiangqiEngine';
+import type { XiangqiAiDifficulty } from './xiangqiEngine';
 import {
-  applyJieqiMove,
-  createInitialJieqiPieces,
+  chooseJieqiComputerMove,
   getJieqiLegalMoves,
   getJieqiPieceAt,
   toDisplayJieqiPieces,
@@ -80,12 +83,14 @@ import {
   applyPuzzleMove,
   createPuzzleSession,
   dailyPuzzle,
+  getCampaignPuzzle,
   getPuzzleLegalMoves,
+  getPuzzleById,
   resetPuzzleSession,
   revealPuzzleHint,
   tickPuzzleSession,
 } from './puzzle';
-import type { PuzzleSessionStatus } from './puzzle';
+import type { Puzzle, PuzzleSessionStatus } from './puzzle';
 import {
   addXiangqiPuzzleComment,
   applyXiangqiPuzzleAttemptMove,
@@ -99,6 +104,7 @@ import {
   restartXiangqiPuzzleAttempt,
   revealXiangqiPuzzleHint,
   tickXiangqiPuzzleAttempt,
+  undoXiangqiPuzzleAttemptStep,
 } from './xiangqiPuzzle';
 import type { XiangqiPuzzleAttempt, XiangqiPuzzleAttemptStatus } from './xiangqiPuzzle';
 import {
@@ -185,6 +191,7 @@ import {
 } from './xiangqiFriendRoom';
 import type { XiangqiFriendRoomMode, XiangqiKifuRecord } from './xiangqiFriendRoom';
 import {
+  canFlipChessPieceCapture,
   captureFlipChessPiece,
   chooseFlipChessOpening,
   createFlipChessGame,
@@ -195,14 +202,18 @@ import {
   getFlipChessSafePlaceholder,
   getFlipChessTrophySidebar,
   moveFlipChessPiece,
+  previewFlipChessOpening,
 } from './xiangqiFlipChess';
 import type {
   XiangqiFlipChessGameState,
   XiangqiFlipChessPiece,
+  XiangqiFlipChessPieceKind,
+  XiangqiFlipChessSide,
   XiangqiFlipChessSettlement,
 } from './xiangqiFlipChess';
 import comingSoonPoster from './assets/more-games/coming-soon.png';
 import flipChessPoster from './assets/more-games/flip-chess.png';
+import flipRulesGuide from './assets/more-games/flip-rules-guide.png';
 import gobangPoster from './assets/more-games/gobang.png';
 import jieqiIcon from './assets/mode-icons/jieqi.png';
 import moreIcon from './assets/mode-icons/more.png';
@@ -231,6 +242,34 @@ type Route = 'home' | 'lobby' | 'jieqi' | 'puzzle' | 'more-game' | 'game' | 'res
 type Mode = 'xiangqi' | 'jieqi' | 'puzzle' | 'more' | 'ranked';
 type BottomTab = 'play' | 'learn' | 'world' | 'discover' | 'me';
 type MatchMode = 'certification' | 'rating' | 'training' | 'huashan' | 'coinRandom' | 'fast5' | 'standard10' | 'slow20' | 'friend';
+type MoreGameKind = 'gobang' | 'flip';
+type FlipOpeningStage = 'shining' | 'choice';
+type RecentPlayRoute = Extract<Route, 'home' | 'lobby' | 'jieqi' | 'puzzle' | 'more-game'>;
+type RecentPlay = {
+  title: string;
+  count: string;
+  playedAt: string;
+  mode: Mode;
+  route: RecentPlayRoute;
+  moreGame?: MoreGameKind;
+  puzzleView?: PuzzleView;
+};
+type RecentPlayInput = Omit<RecentPlay, 'playedAt'>;
+type GobangSnapshot = {
+  board: number[][];
+  status: string;
+  lastMove: Position | null;
+};
+type FlipCaptureReveal = {
+  id: number;
+  attackerLabel: string;
+  side: XiangqiFlipChessSide;
+  label: string;
+};
+type FlipRivalAction = {
+  state: XiangqiFlipChessGameState;
+  reveal: FlipCaptureReveal | null;
+};
 type ConfirmAction = 'resign' | 'exit';
 type PuzzleState = PuzzleSessionStatus | XiangqiPuzzleAttemptStatus;
 type PuzzleView = 'campaign-map' | 'play';
@@ -247,6 +286,72 @@ type SettingKey =
   | 'localVoice'
   | 'boardMarks';
 type GameSettings = Record<SettingKey, boolean>;
+
+const gobangDifficultyOptions: Array<{ id: GobangDifficulty; label: string; detail: string; rival: string }> = [
+  { id: 'easy', label: '入门', detail: '会主动连子，但防守偶尔漏招。', rival: '白子 · 入门人机' },
+  { id: 'normal', label: '标准', detail: '会找胜招、挡四，并重视活三活四。', rival: '白子 · 标准人机' },
+  { id: 'hard', label: '高手', detail: '会额外预判你的下一手威胁。', rival: '白子 · 高手人机' },
+];
+
+const xiangqiAiDifficultyOptions: Array<{
+  id: XiangqiAiDifficulty;
+  label: string;
+  detail: string;
+  rival: string;
+  badge: string;
+}> = [
+  { id: 'beginner', label: '入门', detail: '轻量本地 AI，适合刚熟悉走法和吃子价值。', rival: '入门人机', badge: '练手' },
+  { id: 'advanced', label: '进阶', detail: '短时引擎思考，会处理常见将军和兑子。', rival: '进阶人机', badge: '推荐' },
+  { id: 'expert', label: '高手', detail: '更长引擎思考，优先防送子和战术漏招。', rival: '高手人机', badge: '强引擎' },
+];
+
+function cloneGobangBoard(board: number[][]): number[][] {
+  return board.map((row) => [...row]);
+}
+
+const recentPlayStorageKey = 'tiantian-xiangqi-recent-play';
+
+function formatRecentPlayDate(date = new Date()): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}.${month}.${day}`;
+}
+
+function defaultRecentPlay(): RecentPlay {
+  return {
+    title: '象棋-棋力认证',
+    count: '190720',
+    playedAt: formatRecentPlayDate(),
+    mode: 'xiangqi',
+    route: 'lobby',
+  };
+}
+
+function isRecentPlay(value: unknown): value is RecentPlay {
+  if (!value || typeof value !== 'object') return false;
+  const item = value as Partial<RecentPlay>;
+  const modes: Mode[] = ['xiangqi', 'jieqi', 'puzzle', 'more', 'ranked'];
+  const routes: RecentPlayRoute[] = ['home', 'lobby', 'jieqi', 'puzzle', 'more-game'];
+  return (
+    typeof item.title === 'string' &&
+    typeof item.count === 'string' &&
+    typeof item.playedAt === 'string' &&
+    modes.includes(item.mode as Mode) &&
+    routes.includes(item.route as RecentPlayRoute)
+  );
+}
+
+function readRecentPlay(): RecentPlay {
+  if (typeof window === 'undefined') return defaultRecentPlay();
+  try {
+    const stored = window.localStorage.getItem(recentPlayStorageKey);
+    const parsed = stored ? JSON.parse(stored) : null;
+    return isRecentPlay(parsed) ? parsed : defaultRecentPlay();
+  } catch {
+    return defaultRecentPlay();
+  }
+}
 type ToastKind = 'info' | 'success' | 'warning';
 type RankedMenu = 'game' | 'arena' | null;
 type RulesDialogKind = 'xiangqi' | 'jieqi' | 'ranked';
@@ -303,17 +408,23 @@ type LobbyEntry = {
   toast?: string;
 };
 type RankedGameOption = {
-  id: string;
+  id: RankedGameId;
   label: string;
   baseScore: string;
   players: string;
 };
 type RankedArenaOption = {
-  id: string;
+  id: RankedArenaId;
   label: string;
   stake: string;
   players: string;
   bonus?: string;
+};
+type RankedGameId = 'xiangqi' | 'jieqi';
+type RankedArenaId = 'fast5-basic' | 'fast5-mid' | 'fast5-high' | 'standard10-basic' | 'slow20-basic';
+type RankedStartSelection = {
+  game: RankedGameOption;
+  arena: RankedArenaOption;
 };
 const BOARD_PADDING_PERCENT = 7;
 const generatedPieceImages: PieceImageMap = {
@@ -336,6 +447,104 @@ const generatedPieceImages: PieceImageMap = {
     pawn: redBingPiece,
   },
 };
+const flipPieceKindMap: Record<XiangqiFlipChessPieceKind, PieceKind> = {
+  general: 'king',
+  advisor: 'advisor',
+  elephant: 'elephant',
+  horse: 'horse',
+  rook: 'rook',
+  cannon: 'cannon',
+  pawn: 'pawn',
+};
+
+function chooseFlipOpeningPreviewCells(state: XiangqiFlipChessGameState, count = 4): string[] {
+  const candidates = state.pieces.filter((piece) => !piece.captured).map((piece) => piece.cellId);
+  const shuffled = [...candidates];
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1));
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+  return shuffled.slice(0, count);
+}
+
+function formatFlipSide(side: XiangqiFlipChessSide): string {
+  return side === 'red' ? '红方' : '黑方';
+}
+
+function getOppositeFlipSide(side: XiangqiFlipChessSide): XiangqiFlipChessSide {
+  return side === 'red' ? 'black' : 'red';
+}
+
+function getFlipAdjacentCells(state: XiangqiFlipChessGameState, cellId: string): string[] {
+  const match = /^f(\d+)-(\d+)$/.exec(cellId);
+  if (!match) return [];
+  const row = Number(match[1]);
+  const col = Number(match[2]);
+  return [
+    [row - 1, col],
+    [row + 1, col],
+    [row, col - 1],
+    [row, col + 1],
+  ]
+    .filter(([nextRow, nextCol]) => (
+      nextRow >= 0 && nextRow < state.board.rows && nextCol >= 0 && nextCol < state.board.cols
+    ))
+    .map(([nextRow, nextCol]) => `f${nextRow}-${nextCol}`);
+}
+
+function chooseFlipRivalAction(state: XiangqiFlipChessGameState): FlipRivalAction | null {
+  if (state.phase !== 'playing' || !state.turnSide) return null;
+  const activePieces = state.pieces.filter((piece) => !piece.captured);
+  const ownPieces = activePieces.filter((piece) => piece.side === state.turnSide && !piece.hidden);
+  const captures = ownPieces
+    .flatMap((attacker) => (
+      activePieces
+        .filter((target) => target.id !== attacker.id && canFlipChessPieceCapture(state, attacker, target))
+        .map((target) => ({ attacker, target }))
+    ))
+    .sort((a, b) => {
+      if (a.target.side !== b.target.side) return a.target.side === state.turnSide ? 1 : -1;
+      return b.target.damage - a.target.damage;
+    });
+
+  if (captures[0]) {
+    const { attacker, target } = captures[0];
+    return {
+      state: captureFlipChessPiece(state, attacker.id, target.cellId),
+      reveal: target.hidden
+        ? { id: Date.now(), attackerLabel: attacker.label, side: target.side, label: target.label }
+        : null,
+    };
+  }
+
+  const hiddenPieces = activePieces.filter((piece) => piece.hidden);
+  if (hiddenPieces[0]) {
+    const target = hiddenPieces[Math.floor(Math.random() * hiddenPieces.length)];
+    return { state: flipFlipChessPiece(state, target.cellId), reveal: null };
+  }
+
+  for (const piece of ownPieces) {
+    const emptyTarget = getFlipAdjacentCells(state, piece.cellId)
+      .find((cellId) => !activePieces.some((item) => item.cellId === cellId));
+    if (emptyTarget) return { state: moveFlipChessPiece(state, piece.id, emptyTarget), reveal: null };
+  }
+
+  return null;
+}
+
+function formatFlipActionError(error: unknown, fallback: string): string {
+  const message = error instanceof Error ? error.message : '';
+  if (!message) return fallback;
+  if (message.includes('不能吃')) return message;
+  if (message.includes('Hidden pieces')) return '暗子需要先翻开';
+  if (message.includes('already revealed')) return '这枚棋子已经翻开';
+  if (message.includes('It is')) return '还没轮到这个阵营';
+  if (message.includes('occupied')) return '目标位置已有棋子';
+  if (message.includes('Only adjacent')) return '只能移动到相邻空位';
+  if (message.includes('No target')) return '目标位置没有棋子';
+  if (message.includes('Unknown')) return '没有找到这枚棋子';
+  return fallback;
+}
 const xiangqiRulesSections: RuleSection[] = [
   {
     title: '天天象棋棋规',
@@ -737,6 +946,30 @@ function getMatchMode(mode: MatchMode): LobbyMode {
   return matchModes.find((item) => item.id === mode) ?? matchModes[0];
 }
 
+function getXiangqiAiDifficultyOption(difficulty: XiangqiAiDifficulty) {
+  return xiangqiAiDifficultyOptions.find((option) => option.id === difficulty) ?? xiangqiAiDifficultyOptions[1];
+}
+
+function createAiTrainingPlaySession(difficulty: XiangqiAiDifficulty, tableSeed: number): XiangqiPlaySession {
+  const option = getXiangqiAiDifficultyOption(difficulty);
+  const base = createGenericPlaySession('training', `人机对战-${option.label}`, 10 * 60, '前3步30秒，之后90秒');
+  return {
+    ...base,
+    id: `generic-training-${difficulty}`,
+    label: `人机对战-${option.label}`,
+    arenaTitle: `${option.label}人机`,
+    tableLabel: `本地桌 ${tableSeed}`,
+    detail: option.detail,
+    rewardLabel: '不计积分练习局',
+    replayTags: ['本地练习', `${option.label}人机`, '难度可选'],
+    notes: [
+      `当前难度：${option.label}`,
+      option.detail,
+      '可从人机对战入口重新选择难度后再开局。',
+    ],
+  };
+}
+
 function mapXiangqiMatchMode(action: XiangqiFeatureAction): MatchMode {
   if (action.match?.mode === 'rank-certification') return 'certification';
   if (action.match?.mode === 'coin-arena') return 'coinRandom';
@@ -749,6 +982,12 @@ function mapXiangqiMatchMode(action: XiangqiFeatureAction): MatchMode {
     return 'standard10';
   }
   return 'standard10';
+}
+
+function minuteModeFromRankedArena(arenaId: RankedArenaId): XiangqiMinuteArenaMode {
+  if (arenaId.startsWith('fast5')) return 'five-minute';
+  if (arenaId.startsWith('slow20')) return 'twenty-minute';
+  return 'ten-minute';
 }
 
 function tableLabelForSession(session: XiangqiPlaySession, tableSeed: number): string {
@@ -795,10 +1034,13 @@ export default function App() {
   const [tableSeed, setTableSeed] = useState(1);
   const [selectedCoinRowId, setSelectedCoinRowId] = useState<XiangqiCoinArenaRowId>('random');
   const [selectedMinuteMode, setSelectedMinuteMode] = useState<XiangqiMinuteArenaMode>('five-minute');
+  const [selectedRankedJieqiMode, setSelectedRankedJieqiMode] = useState<XiangqiMinuteArenaMode>('ten-minute');
   const [selectedHuashanMode, setSelectedHuashanMode] = useState<XiangqiHuashanMode>('pass');
   const [selectedFriendMode, setSelectedFriendMode] = useState<XiangqiFriendRoomMode>('ten-minute');
+  const [selectedXiangqiDifficulty, setSelectedXiangqiDifficulty] = useState<XiangqiAiDifficulty>('advanced');
   const [kifuRecords, setKifuRecords] = useState<XiangqiKifuRecord[]>([]);
   const [selectedKifuId, setSelectedKifuId] = useState<string | null>(null);
+  const [recentPlay, setRecentPlay] = useState<RecentPlay>(() => readRecentPlay());
   const [confirmAction, setConfirmAction] = useState<ConfirmAction | null>(null);
   const [replayPlaying, setReplayPlaying] = useState(false);
   const [puzzleAttempt, setPuzzleAttempt] = useState<XiangqiPuzzleAttempt>(() => (
@@ -807,7 +1049,8 @@ export default function App() {
   const [puzzleSelected, setPuzzleSelected] = useState<string | null>(null);
   const [puzzleLegalMoves, setPuzzleLegalMoves] = useState<Position[]>([]);
   const [puzzleView, setPuzzleView] = useState<PuzzleView>('campaign-map');
-  const [campaignLevel, setCampaignLevel] = useState(3);
+  const [campaignLevel, setCampaignLevel] = useState(1);
+  const [campaignAttemptLevel, setCampaignAttemptLevel] = useState(1);
   const [campaignStamina, setCampaignStamina] = useState(8);
   const [campaignResultKind, setCampaignResultKind] = useState<CampaignResultKind>(null);
   const [campaignRankOpen, setCampaignRankOpen] = useState(false);
@@ -816,6 +1059,13 @@ export default function App() {
   const [puzzleCommentText, setPuzzleCommentText] = useState('');
   const [gobangBoard, setGobangBoard] = useState<number[][]>(() => createGobangBoard());
   const [gobangStatus, setGobangStatus] = useState('黑先手');
+  const [gobangLastMove, setGobangLastMove] = useState<Position | null>(null);
+  const [gobangDifficulty, setGobangDifficulty] = useState<GobangDifficulty>('normal');
+  const [gobangDifficultyOpen, setGobangDifficultyOpen] = useState(false);
+  const [gobangHistory, setGobangHistory] = useState<GobangSnapshot[]>([]);
+  const [gobangUndoLeft, setGobangUndoLeft] = useState(3);
+  const [gobangDrawOffersLeft, setGobangDrawOffersLeft] = useState(3);
+  const [activeMoreGame, setActiveMoreGame] = useState<MoreGameKind>('gobang');
   const [gameIntroOpen, setGameIntroOpen] = useState(false);
   const [gameMenuOpen, setGameMenuOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -842,6 +1092,8 @@ export default function App() {
   const [rulesDialog, setRulesDialog] = useState<RulesDialogKind | null>(null);
   const [featureDialog, setFeatureDialog] = useState<FeatureDialogState | null>(null);
   const contentFrameRef = useRef<HTMLDivElement>(null);
+  const gameRef = useRef(game);
+  const puzzleAiRequestRef = useRef(0);
   const puzzleSession = puzzleAttempt.session;
   const puzzleBoard = puzzleSession.pieces;
   const puzzleStatus = puzzleAttempt.status;
@@ -849,6 +1101,7 @@ export default function App() {
   const puzzleSeconds = puzzleSession.elapsedSeconds;
   const puzzleHintTarget = puzzleSession.revealedHint?.target ?? null;
   const puzzleHintVisible = Boolean(puzzleHintTarget);
+  const activePuzzle = getPuzzleById(puzzleAttempt.puzzleId) ?? dailyPuzzle;
   const isLobbyTitle =
     route === 'lobby' ||
     (route === 'home' && bottomTab === 'play' && (activeMode === 'jieqi' || activeMode === 'puzzle' || activeMode === 'more'));
@@ -857,7 +1110,7 @@ export default function App() {
     if (route === 'lobby') return '象棋';
     if (route === 'jieqi') return '揭棋评测';
     if (route === 'puzzle') return puzzleView === 'campaign-map' || puzzleAttempt.entryId === 'campaign' ? '残局闯关' : '每日残局';
-    if (route === 'more-game') return '更多玩法';
+    if (route === 'more-game') return activeMoreGame === 'gobang' ? '欢乐五子棋' : '翻翻棋';
     if (route === 'game') return `${sessionLabel}对局`;
     if (route === 'result') return `${sessionLabel}结算`;
     if (route === 'replay') return `${sessionLabel}复盘`;
@@ -866,9 +1119,12 @@ export default function App() {
     if (activeMode === 'xiangqi') return '首页';
     if (activeMode === 'puzzle') return '残局挑战';
     return modeItems.find((item) => item.id === activeMode)?.label ?? '下棋';
-  }, [activeMode, bottomTab, puzzleAttempt.entryId, puzzleView, route, sessionLabel]);
+  }, [activeMode, activeMoreGame, bottomTab, puzzleAttempt.entryId, puzzleView, route, sessionLabel]);
 
-  const currentOpponent = opponents[opponentIndex % opponents.length];
+  const selectedXiangqiDifficultyOption = getXiangqiAiDifficultyOption(selectedXiangqiDifficulty);
+  const currentOpponent = matchMode === 'training'
+    ? { name: '小天', rank: selectedXiangqiDifficultyOption.rival }
+    : opponents[opponentIndex % opponents.length];
 
   useEffect(() => {
     if (route !== 'game' || game.phase !== 'playing' || game.paused) return;
@@ -897,19 +1153,42 @@ export default function App() {
   }, [activeMode, bottomTab, puzzleStatus, puzzleView, route]);
 
   useEffect(() => {
+    gameRef.current = game;
+  }, [game]);
+
+  useEffect(() => {
     if (route !== 'game' || game.phase !== 'playing' || game.turn !== 'black' || game.paused) return;
 
+    let cancelled = false;
     const aiDelay = window.setTimeout(() => {
-      setGame((current) => {
-        if (current.phase !== 'playing' || current.turn !== 'black' || current.paused) return current;
-        const move = chooseAiMove(current.pieces, current.moveHistory.length);
-        if (!move) return finishGame(current, 'red', getDefeatReason(current.pieces, 'black') ?? 'stalemate');
-        return applyMove(current, move.pieceId, move.to);
+      const requested = gameRef.current;
+      const requestedMoveCount = requested.moveHistory.length;
+      void chooseComputerMove(requested.pieces, 'black', {
+        turnIndex: requestedMoveCount,
+        difficulty: selectedXiangqiDifficulty,
+      }).then((move) => {
+        if (cancelled) return;
+        setGame((current) => {
+          if (
+            current.phase !== 'playing' ||
+            current.turn !== 'black' ||
+            current.paused ||
+            current.pieces !== requested.pieces ||
+            current.moveHistory.length !== requestedMoveCount
+          ) {
+            return current;
+          }
+          if (!move) return finishGame(current, 'red', getDefeatReason(current.pieces, 'black') ?? 'stalemate');
+          return applyMove(current, move.pieceId, move.to);
+        });
       });
     }, 650);
 
-    return () => window.clearTimeout(aiDelay);
-  }, [game.moveHistory.length, game.paused, game.phase, game.turn, route]);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(aiDelay);
+    };
+  }, [game.moveHistory.length, game.paused, game.phase, game.turn, route, selectedXiangqiDifficulty]);
 
   useEffect(() => {
     if (game.result && route === 'game') {
@@ -961,8 +1240,46 @@ export default function App() {
     return () => window.clearTimeout(toastDelay);
   }, [toast]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(recentPlayStorageKey, JSON.stringify(recentPlay));
+    } catch {
+      // Local storage can be unavailable in private browsing; the in-memory state still updates.
+    }
+  }, [recentPlay]);
+
   function showToast(message: string, kind: ToastKind = 'info') {
     setToast({ id: Date.now(), message, kind });
+  }
+
+  function recordRecentPlay(input: RecentPlayInput) {
+    setRecentPlay({ ...input, playedAt: formatRecentPlayDate() });
+  }
+
+  function recordRecentSession(session: XiangqiPlaySession) {
+    if (activeMode === 'ranked') {
+      recordRecentPlay({
+        title: `排位赛-${session.label}`,
+        count: modeItems.find((item) => item.id === 'ranked')?.count ?? '0',
+        mode: 'ranked',
+        route: 'home',
+      });
+      return;
+    }
+    recordRecentPlay({
+      title: `象棋-${session.label}`,
+      count: modeItems.find((item) => item.id === 'xiangqi')?.count ?? '0',
+      mode: 'xiangqi',
+      route: 'lobby',
+    });
+  }
+
+  function openRecentPlay() {
+    setActiveMode(recentPlay.mode);
+    setBottomTab('play');
+    if (recentPlay.moreGame) setActiveMoreGame(recentPlay.moreGame);
+    if (recentPlay.puzzleView) setPuzzleView(recentPlay.puzzleView);
+    setRoute(recentPlay.route);
   }
 
   function openModeHelp() {
@@ -982,6 +1299,10 @@ export default function App() {
   }
 
   function openXiangqiFeature(entryId: XiangqiFeatureEntryId) {
+    if (entryId === 'endgame') {
+      openMode('puzzle');
+      return;
+    }
     setFeatureDialog({ kind: 'xiangqi', entryId });
   }
 
@@ -994,6 +1315,14 @@ export default function App() {
   }
 
   function openDailyPuzzle() {
+    puzzleAiRequestRef.current += 1;
+    recordRecentPlay({
+      title: '残局-每日残局',
+      count: modeItems.find((item) => item.id === 'puzzle')?.count ?? '0',
+      mode: 'puzzle',
+      route: 'puzzle',
+      puzzleView: 'play',
+    });
     setPuzzleAttempt(createXiangqiPuzzleAttempt('daily'));
     setPuzzleSelected(null);
     setPuzzleLegalMoves([]);
@@ -1007,6 +1336,7 @@ export default function App() {
   }
 
   function openCampaignMap() {
+    puzzleAiRequestRef.current += 1;
     setPuzzleSelected(null);
     setPuzzleLegalMoves([]);
     setPuzzleSettlementOpen(false);
@@ -1018,11 +1348,24 @@ export default function App() {
     setRoute('puzzle');
   }
 
-  function startCampaignLevel(level = campaignLevel) {
+  function startCampaignLevel(level = campaignLevel, force = false) {
+    if (!force && level > campaignLevel) {
+      showToast('先通过前一关再挑战这里', 'warning');
+      return;
+    }
+    puzzleAiRequestRef.current += 1;
+    recordRecentPlay({
+      title: `残局-第${level}关`,
+      count: modeItems.find((item) => item.id === 'puzzle')?.count ?? '0',
+      mode: 'puzzle',
+      route: 'puzzle',
+      puzzleView: 'play',
+    });
     const nextStamina = Math.max(0, campaignStamina - 1);
-    setCampaignLevel(level);
+    setCampaignAttemptLevel(level);
     setCampaignStamina(nextStamina);
     setPuzzleAttempt(createXiangqiPuzzleAttempt('campaign', {
+      puzzle: getCampaignPuzzle(level),
       resources: { stamina: nextStamina, hintCards: 2 },
     }));
     setPuzzleSelected(null);
@@ -1037,8 +1380,9 @@ export default function App() {
   }
 
   function nextCampaignLevel() {
-    const nextLevel = Math.min(720, campaignLevel + 1);
-    startCampaignLevel(nextLevel);
+    const nextLevel = Math.min(720, campaignAttemptLevel + 1);
+    setCampaignLevel((level) => Math.max(level, nextLevel));
+    startCampaignLevel(nextLevel, true);
   }
 
   function runFeaturePrimaryAction() {
@@ -1118,14 +1462,14 @@ export default function App() {
       const action = getXiangqiFeatureAction(featureDialog.entryId);
       if (action.type === 'start-match' && action.match) {
         setFeatureDialog(null);
-        startMatching(mapXiangqiMatchMode(action));
+        const mode = mapXiangqiMatchMode(action);
+        const session = mode === 'training' ? createAiTrainingPlaySession(selectedXiangqiDifficulty, tableSeed) : undefined;
+        startMatching(mode, session?.label, session);
         return;
       }
       if (action.type === 'open-puzzle') {
         setFeatureDialog(null);
-        setActiveMode('puzzle');
-        setBottomTab('play');
-        setRoute('puzzle');
+        openMode('puzzle');
         return;
       }
       showToast(`${action.title}已在面板中展示`, 'info');
@@ -1136,6 +1480,12 @@ export default function App() {
       const action = getJieqiFeatureAction(featureDialog.entryId);
       if (action.type === 'start-jieqi') {
         setFeatureDialog(null);
+        recordRecentPlay({
+          title: '揭棋-揭棋评测',
+          count: modeItems.find((item) => item.id === 'jieqi')?.count ?? '0',
+          mode: 'jieqi',
+          route: 'jieqi',
+        });
         setActiveMode('jieqi');
         setBottomTab('play');
         setRoute('jieqi');
@@ -1210,6 +1560,10 @@ export default function App() {
       setSelectedFriendMode(cardId as XiangqiFriendRoomMode);
       return;
     }
+    if (featureDialog.entryId === 'ai-match') {
+      setSelectedXiangqiDifficulty(cardId as XiangqiAiDifficulty);
+      return;
+    }
     if (featureDialog.entryId === 'my-records') {
       setSelectedKifuId(cardId);
     }
@@ -1254,6 +1608,18 @@ export default function App() {
     setRoute('home');
   }
 
+  function openJieqiGame() {
+    recordRecentPlay({
+      title: '揭棋-揭棋评测',
+      count: modeItems.find((item) => item.id === 'jieqi')?.count ?? '0',
+      mode: 'jieqi',
+      route: 'jieqi',
+    });
+    setActiveMode('jieqi');
+    setBottomTab('play');
+    setRoute('jieqi');
+  }
+
   function createDefaultPlaySession(mode: MatchMode, label = getMatchMode(mode).label): XiangqiPlaySession {
     if (mode === 'certification') return createCertificationPlaySession(tableSeed);
     if (mode === 'rating') return createRatingPlaySession(tableSeed);
@@ -1263,12 +1629,33 @@ export default function App() {
     if (mode === 'fast5') return createMinutePlaySession('five-minute', tableSeed);
     if (mode === 'slow20') return createMinutePlaySession('twenty-minute', tableSeed);
     if (mode === 'standard10') return createMinutePlaySession('ten-minute', tableSeed);
+    if (mode === 'training') return createAiTrainingPlaySession(selectedXiangqiDifficulty, tableSeed);
     const modeInfo = getMatchMode(mode);
     return createGenericPlaySession(mode, label, modeInfo.totalSeconds, modeInfo.stepLabel);
   }
 
   function startPlaySession(session: XiangqiPlaySession) {
     startMatching(session.matchMode as MatchMode, session.label, session);
+  }
+
+  function startRankedSelection(selection: RankedStartSelection) {
+    const minuteMode = minuteModeFromRankedArena(selection.arena.id);
+    if (selection.game.id === 'jieqi') {
+      setSelectedRankedJieqiMode(minuteMode);
+      setMatchingMode(null);
+      recordRecentPlay({
+        title: `揭棋排位-${selection.arena.label}`,
+        count: modeItems.find((item) => item.id === 'jieqi')?.count ?? '0',
+        mode: 'jieqi',
+        route: 'jieqi',
+      });
+      setActiveMode('jieqi');
+      setBottomTab('play');
+      setRoute('jieqi');
+      showToast(`已进入揭棋排位：${selection.arena.label}`, 'success');
+      return;
+    }
+    startPlaySession(createMinutePlaySession(minuteMode, tableSeed));
   }
 
   function startMatching(mode: MatchMode, label = getMatchMode(mode).label, session = createDefaultPlaySession(mode, label)) {
@@ -1288,6 +1675,7 @@ export default function App() {
     setMatchMode(mode);
     setSessionLabel(label);
     setPlaySession(session);
+    recordRecentSession(session);
     setGame({
       ...createInitialGame(
         session.totalSeconds,
@@ -1454,17 +1842,21 @@ export default function App() {
 
   function selectPuzzlePoint(point: Position) {
     if (puzzleStatus === 'solved' || puzzleStatus === 'impossible' || puzzleStatus === 'abandoned') return;
+    if (activePuzzle.mode === 'free-mate' && puzzleSession.turn !== activePuzzle.sideToMove) return;
     const selected = puzzleSelected ? findPiece(puzzleBoard, puzzleSelected) : undefined;
     const pointPiece = getPieceAt(puzzleBoard, point);
     if (selected && hasPoint(puzzleLegalMoves, point)) {
-      const result = applyXiangqiPuzzleAttemptMove(dailyPuzzle, puzzleAttempt, { pieceId: selected.id, to: point });
+      const useEngineReply = activePuzzle.mode === 'free-mate';
+      const result = applyXiangqiPuzzleAttemptMove(activePuzzle, puzzleAttempt, { pieceId: selected.id, to: point }, undefined, {
+        autoReply: !useEngineReply,
+      });
       setPuzzleAttempt(result.attempt);
       setPuzzleSelected(null);
       setPuzzleLegalMoves([]);
       if (result.attempt.status === 'solved' || result.attempt.status === 'impossible') {
         setPuzzleProgress((current) =>
           recordPuzzleAttempt(current, {
-            puzzleId: dailyPuzzle.id,
+            puzzleId: activePuzzle.id,
             outcome: result.attempt.status === 'solved' ? 'solved' : 'failed',
             elapsedSeconds: result.attempt.session.elapsedSeconds,
             hintsUsed: result.attempt.session.hintsUsed,
@@ -1477,7 +1869,8 @@ export default function App() {
         setPuzzleSettlementOpen(true);
         if (puzzleAttempt.entryId === 'campaign') {
           setCampaignResultKind('success');
-          if (campaignLevel % 5 === 0) setCampaignStamina((current) => Math.min(10, current + 2));
+          setCampaignLevel((level) => Math.max(level, Math.min(720, campaignAttemptLevel + 1)));
+          if (campaignAttemptLevel % 5 === 0) setCampaignStamina((current) => Math.min(10, current + 2));
         }
         showToast('残局挑战成功，已生成成绩卡', 'success');
       }
@@ -1487,6 +1880,47 @@ export default function App() {
           setPuzzleSettlementOpen(true);
         }
         showToast(result.message, 'warning');
+      }
+      if (
+        useEngineReply &&
+        result.verdict === 'correct' &&
+        result.attempt.status === 'playing' &&
+        result.attempt.session.turn !== activePuzzle.sideToMove
+      ) {
+        const requestId = puzzleAiRequestRef.current + 1;
+        puzzleAiRequestRef.current = requestId;
+        void chooseComputerMove(result.attempt.session.pieces, result.attempt.session.turn, {
+          turnIndex: result.attempt.session.steps,
+          difficulty: 'expert',
+          movetimeMs: 600,
+          timeoutMs: 1800,
+        }).then((reply) => {
+          if (puzzleAiRequestRef.current !== requestId) return;
+          if (!reply) return;
+          const replyResult = applyXiangqiPuzzleAttemptMove(activePuzzle, result.attempt, reply, undefined, {
+            autoReply: false,
+          });
+          setPuzzleAttempt(replyResult.attempt);
+          if (replyResult.attempt.status === 'solved' || replyResult.attempt.status === 'impossible') {
+            setPuzzleProgress((current) =>
+              recordPuzzleAttempt(current, {
+                puzzleId: activePuzzle.id,
+                outcome: replyResult.attempt.status === 'solved' ? 'solved' : 'failed',
+                elapsedSeconds: replyResult.attempt.session.elapsedSeconds,
+                hintsUsed: replyResult.attempt.session.hintsUsed,
+                moves: replyResult.attempt.session.steps,
+                session: replyResult.attempt.session,
+              }),
+            );
+          }
+          if (replyResult.attempt.status === 'impossible') {
+            if (puzzleAttempt.entryId === 'campaign') {
+              setCampaignResultKind('failure');
+              setPuzzleSettlementOpen(true);
+            }
+            showToast(replyResult.message, 'warning');
+          }
+        });
       }
       return;
     }
@@ -1500,39 +1934,147 @@ export default function App() {
   }
 
   function resetPuzzle() {
-    setPuzzleAttempt((current) => restartXiangqiPuzzleAttempt(dailyPuzzle, current));
+    puzzleAiRequestRef.current += 1;
+    setPuzzleAttempt((current) => {
+      const puzzle = getPuzzleById(current.puzzleId) ?? activePuzzle;
+      return restartXiangqiPuzzleAttempt(puzzle, current);
+    });
     setPuzzleSelected(null);
     setPuzzleLegalMoves([]);
     setPuzzleSettlementOpen(false);
     setCampaignResultKind(null);
   }
 
+  function undoPuzzleMove() {
+    puzzleAiRequestRef.current += 1;
+    let undone = false;
+    setPuzzleAttempt((current) => {
+      const puzzle = getPuzzleById(current.puzzleId) ?? activePuzzle;
+      const next = undoXiangqiPuzzleAttemptStep(puzzle, current);
+      undone = next.session.moveHistory.length < current.session.moveHistory.length;
+      return next;
+    });
+    setPuzzleSelected(null);
+    setPuzzleLegalMoves([]);
+    setPuzzleSettlementOpen(false);
+    setCampaignResultKind(null);
+    showToast(undone ? '已悔棋一轮' : '暂无可悔棋步数', undone ? 'success' : 'warning');
+  }
+
   function showPuzzleHint() {
-    setPuzzleAttempt((current) => revealXiangqiPuzzleHint(dailyPuzzle, current).attempt);
+    setPuzzleAttempt((current) => {
+      const puzzle = getPuzzleById(current.puzzleId) ?? activePuzzle;
+      return revealXiangqiPuzzleHint(puzzle, current).attempt;
+    });
   }
 
   function playGobang(x: number, y: number) {
-    if (gobangBoard[y][x] !== 0 || /胜|满/.test(gobangStatus)) return;
+    if (gobangBoard[y][x] !== 0 || /胜|满|和棋/.test(gobangStatus)) return;
+    const snapshot: GobangSnapshot = {
+      board: cloneGobangBoard(gobangBoard),
+      status: gobangStatus,
+      lastMove: gobangLastMove,
+    };
     const afterPlayer = placeStone(gobangBoard, x, y, 1);
     if (hasGobangWin(afterPlayer, 1)) {
       setGobangBoard(afterPlayer);
       setGobangStatus('黑方胜');
+      setGobangLastMove({ x, y });
+      setGobangHistory((history) => [...history, snapshot]);
       return;
     }
-    const aiMove = chooseGobangMove(afterPlayer, x, y);
+    const aiMove = chooseGobangMove(afterPlayer, x, y, gobangDifficulty);
     if (!aiMove) {
       setGobangBoard(afterPlayer);
       setGobangStatus('棋盘已满');
+      setGobangLastMove({ x, y });
+      setGobangHistory((history) => [...history, snapshot]);
       return;
     }
     const afterAi = placeStone(afterPlayer, aiMove.x, aiMove.y, 2);
     setGobangBoard(afterAi);
     setGobangStatus(hasGobangWin(afterAi, 2) ? '白方胜' : '黑方落子');
+    setGobangLastMove(aiMove);
+    setGobangHistory((history) => [...history, snapshot]);
   }
 
   function resetGobang() {
     setGobangBoard(createGobangBoard());
     setGobangStatus('黑先手');
+    setGobangLastMove(null);
+    setGobangHistory([]);
+    setGobangUndoLeft(3);
+    setGobangDrawOffersLeft(3);
+  }
+
+  function startGobangWithDifficulty(difficulty: GobangDifficulty) {
+    const difficultyOption = gobangDifficultyOptions.find((option) => option.id === difficulty) ?? gobangDifficultyOptions[1];
+    recordRecentPlay({
+      title: `欢乐五子棋-${difficultyOption.label}`,
+      count: '1404',
+      mode: 'more',
+      route: 'more-game',
+      moreGame: 'gobang',
+    });
+    setGobangDifficulty(difficulty);
+    setGobangDifficultyOpen(false);
+    resetGobang();
+    setActiveMoreGame('gobang');
+    setActiveMode('more');
+    setBottomTab('play');
+    setRoute('more-game');
+  }
+
+  function undoGobangRound() {
+    if (gobangUndoLeft <= 0) {
+      showToast('悔棋次数已用完', 'warning');
+      return;
+    }
+    const snapshot = gobangHistory[gobangHistory.length - 1];
+    if (!snapshot) {
+      showToast('现在还不能悔棋', 'warning');
+      return;
+    }
+    setGobangBoard(cloneGobangBoard(snapshot.board));
+    setGobangStatus(snapshot.status);
+    setGobangLastMove(snapshot.lastMove);
+    setGobangHistory((history) => history.slice(0, -1));
+    setGobangUndoLeft((left) => left - 1);
+    showToast(`已悔棋，还剩 ${gobangUndoLeft - 1} 次`, 'success');
+  }
+
+  function offerGobangDraw() {
+    if (/胜|满|和棋/.test(gobangStatus)) {
+      showToast('本局已经结束', 'info');
+      return;
+    }
+    if (gobangDrawOffersLeft <= 0) {
+      showToast('求和次数已用完', 'warning');
+      return;
+    }
+    setGobangDrawOffersLeft((left) => left - 1);
+    setGobangStatus('双方和棋');
+    showToast(`求和成功，还剩 ${gobangDrawOffersLeft - 1} 次`, 'success');
+  }
+
+  function openMoreGame(gameKind: MoreGameKind) {
+    if (gameKind === 'gobang') {
+      setGobangDifficultyOpen(true);
+      setActiveMode('more');
+      setBottomTab('play');
+      return;
+    }
+    recordRecentPlay({
+      title: '翻翻棋-新手训练场',
+      count: '2269',
+      mode: 'more',
+      route: 'more-game',
+      moreGame: 'flip',
+    });
+    setActiveMoreGame(gameKind);
+    setActiveMode('more');
+    setBottomTab('play');
+    setRoute('more-game');
   }
 
   const result = game.result;
@@ -1572,15 +2114,15 @@ export default function App() {
           </nav>
           <section className="recent-play" aria-label="最近玩过">
             <p>最近玩过</p>
-            <button onClick={() => openMode('more')}>
+            <button onClick={openRecentPlay}>
               <span className="recent-token is-image-token" aria-hidden="true">
                 <img className="mode-token-image" src={recentIcon} alt="" />
               </span>
               <span>
-                <strong>翻翻棋-铜钱场</strong>
-                <small>1907</small>
+                <strong>{recentPlay.title}</strong>
+                <small>{recentPlay.count}</small>
               </span>
-              <em>2026.05.26玩过</em>
+              <em>{recentPlay.playedAt}玩过</em>
               <ChevronRight size={22} aria-hidden="true" />
             </button>
           </section>
@@ -1642,11 +2184,11 @@ export default function App() {
               gobangBoard={gobangBoard}
               gobangStatus={gobangStatus}
               onStart={() => setRoute('lobby')}
-              onStartRanked={() => startMatching('standard10', '排位赛')}
-              onStartJieqi={() => setRoute('jieqi')}
+              onStartRanked={startRankedSelection}
+              onStartJieqi={openJieqiGame}
               onStartPuzzle={openDailyPuzzle}
               onOpenCampaign={openCampaignMap}
-              onStartMoreGame={() => setRoute('more-game')}
+              onStartMoreGame={openMoreGame}
               onPuzzlePoint={selectPuzzlePoint}
               onPuzzleReset={resetPuzzle}
               onPuzzleHint={showPuzzleHint}
@@ -1664,6 +2206,7 @@ export default function App() {
           {route === 'lobby' && <LobbyScreen onFeature={openXiangqiFeature} />}
           {route === 'jieqi' && (
             <JieqiScreen
+              rankedMode={selectedRankedJieqiMode}
               onBack={() => {
                 setRoute('home');
                 setActiveMode('jieqi');
@@ -1675,11 +2218,6 @@ export default function App() {
             <PuzzleCampaignMap
               currentLevel={campaignLevel}
               stamina={campaignStamina}
-              onBackLobby={() => {
-                setRoute('home');
-                setActiveMode('puzzle');
-                setBottomTab('play');
-              }}
               onOpenRank={() => setCampaignRankOpen(true)}
               onStartLevel={startCampaignLevel}
             />
@@ -1695,27 +2233,49 @@ export default function App() {
               seconds={puzzleSeconds}
               hintVisible={puzzleHintVisible}
               hintTarget={puzzleHintTarget}
+              puzzle={activePuzzle}
               onSelectPoint={selectPuzzlePoint}
-              onReset={resetPuzzle}
+              onReset={undoPuzzleMove}
+              onRestart={resetPuzzle}
               onHint={showPuzzleHint}
               onComments={() => setPuzzleCommentsOpen(true)}
-              campaignLevel={campaignLevel}
+              campaignLevel={campaignAttemptLevel}
               campaignStamina={campaignStamina}
-              onBackCampaign={openCampaignMap}
-              onOpenRank={() => setCampaignRankOpen(true)}
+              onBackCampaign={puzzleAttempt.entryId === 'campaign'
+                ? openCampaignMap
+                : () => {
+                  setRoute('home');
+                  setActiveMode('puzzle');
+                  setBottomTab('play');
+                }}
             />
           )}
-          {route === 'more-game' && (
-            <MoreGamesScreen
+          {route === 'more-game' && activeMoreGame === 'gobang' && (
+            <GobangScreen
               board={gobangBoard}
               status={gobangStatus}
+              lastMove={gobangLastMove}
+              difficulty={gobangDifficulty}
+              drawOffersLeft={gobangDrawOffersLeft}
+              undoLeft={gobangUndoLeft}
               onBack={() => {
                 setRoute('home');
                 setActiveMode('more');
                 setBottomTab('play');
               }}
+              onDraw={offerGobangDraw}
               onPoint={playGobang}
               onReset={resetGobang}
+              onUndo={undoGobangRound}
+            />
+          )}
+          {route === 'more-game' && activeMoreGame === 'flip' && (
+            <FlipChessScreen
+              onBack={() => {
+                setRoute('home');
+                setActiveMode('more');
+                setBottomTab('play');
+              }}
             />
           )}
           {route === 'game' && (
@@ -1839,7 +2399,7 @@ export default function App() {
         {route === 'puzzle' && puzzleView === 'play' && puzzleAttempt.entryId === 'campaign' && puzzleSettlementOpen && campaignResultKind && (
           <PuzzleCampaignResultDialog
             attempt={puzzleAttempt}
-            level={campaignLevel}
+            level={campaignAttemptLevel}
             resultKind={campaignResultKind}
             onHelp={() => showToast('求助好友为本地安全占位', 'info')}
             onRestart={resetPuzzle}
@@ -1868,12 +2428,20 @@ export default function App() {
             selectedMinuteMode={selectedMinuteMode}
             selectedHuashanMode={selectedHuashanMode}
             selectedFriendMode={selectedFriendMode}
+            selectedXiangqiDifficulty={selectedXiangqiDifficulty}
             kifuRecords={kifuRecords}
             selectedKifuId={selectedKifuId}
             onClose={() => setFeatureDialog(null)}
             onPrimary={runFeaturePrimaryAction}
             onSelectCard={selectFeatureCard}
             onSecondary={runFeatureSecondaryAction}
+          />
+        )}
+        {gobangDifficultyOpen && (
+          <GobangDifficultyDialog
+            selected={gobangDifficulty}
+            onClose={() => setGobangDifficultyOpen(false)}
+            onSelect={startGobangWithDifficulty}
           />
         )}
         {rulesDialog && <RulesDialog kind={rulesDialog} onClose={() => setRulesDialog(null)} />}
@@ -1944,11 +2512,11 @@ function HomeScreen({
   gobangBoard: number[][];
   gobangStatus: string;
   onStart: () => void;
-  onStartRanked: () => void;
+  onStartRanked: (selection: RankedStartSelection) => void;
   onStartJieqi: () => void;
   onStartPuzzle: () => void;
   onOpenCampaign: () => void;
-  onStartMoreGame: () => void;
+  onStartMoreGame: (gameKind: MoreGameKind) => void;
   onPuzzlePoint: (point: Position) => void;
   onPuzzleReset: () => void;
   onPuzzleHint: () => void;
@@ -2108,7 +2676,7 @@ function getPuzzleEntryMeta(
   if (entry.kind === 'favorites') return `${progress.favoritePuzzleIds.length}题`;
   if (entry.kind === 'ranking') return `${progress.bestStreak}连胜`;
   if (entry.kind === 'comments') return `${dailyPuzzle.stats.commentCount}条`;
-  if (entry.kind === 'campaign') return '2/720关';
+  if (entry.kind === 'campaign') return '1/720关';
   if (entry.kind === 'scored') return '0分';
   if (entry.kind === 'challenge' || entry.kind === 'study' || entry.kind === 'coin') return '';
   if (entry.kind === 'hot') return '0/282关';
@@ -2203,35 +2771,45 @@ function PuzzleLobbyScreen({
   );
 }
 
-const campaignNodeLayout = [
-  { level: 1, x: 60, y: 92, landmark: '旗' },
-  { level: 2, x: 30, y: 82, landmark: '旗' },
-  { level: 3, x: 48, y: 72, landmark: '战' },
-  { level: 4, x: 77, y: 65, landmark: '营' },
-  { level: 5, x: 52, y: 56, landmark: '5揭竿而起', treasure: true },
-  { level: 6, x: 30, y: 49, landmark: '战' },
-  { level: 7, x: 63, y: 42, landmark: '塔' },
-  { level: 8, x: 79, y: 35, landmark: '台' },
-  { level: 9, x: 34, y: 28, landmark: '城' },
-  { level: 10, x: 54, y: 21, landmark: '10破釜沉舟', treasure: true },
-  { level: 11, x: 77, y: 16, landmark: '垒' },
-  { level: 12, x: 43, y: 11, landmark: '亭' },
-  { level: 13, x: 67, y: 7, landmark: '营' },
-  { level: 14, x: 34, y: 4, landmark: '塔' },
-  { level: 15, x: 71, y: 2, landmark: '15巨鹿之战', treasure: true },
-  { level: 16, x: 28, y: 0, landmark: '关' },
+type CampaignNodeKind = 'flag' | 'battle' | 'camp' | 'tower' | 'city' | 'fort' | 'gate' | 'treasure';
+type CampaignGateArt = 1 | 2 | 3 | 4;
+type CampaignNode = {
+  level: number;
+  x: number;
+  y: number;
+  landmark: string;
+  kind: CampaignNodeKind;
+  gate: CampaignGateArt;
+  treasure?: boolean;
+};
+
+const campaignNodeLayout: CampaignNode[] = [
+  { level: 1, x: 38, y: 94, landmark: '营门', kind: 'camp', gate: 1 },
+  { level: 2, x: 60, y: 87, landmark: '前哨', kind: 'camp', gate: 1 },
+  { level: 3, x: 43, y: 79, landmark: '战', kind: 'battle', gate: 1 },
+  { level: 4, x: 67, y: 71, landmark: '营', kind: 'camp', gate: 1 },
+  { level: 5, x: 52, y: 62, landmark: '揭竿而起', kind: 'treasure', gate: 2, treasure: true },
+  { level: 6, x: 31, y: 55, landmark: '战', kind: 'battle', gate: 2 },
+  { level: 7, x: 55, y: 48, landmark: '塔', kind: 'tower', gate: 2 },
+  { level: 8, x: 78, y: 41, landmark: '台', kind: 'camp', gate: 2 },
+  { level: 9, x: 59, y: 34, landmark: '城', kind: 'city', gate: 3 },
+  { level: 10, x: 36, y: 27, landmark: '破釜沉舟', kind: 'treasure', gate: 3, treasure: true },
+  { level: 11, x: 66, y: 21, landmark: '垒', kind: 'fort', gate: 3 },
+  { level: 12, x: 84, y: 15, landmark: '亭', kind: 'tower', gate: 3 },
+  { level: 13, x: 60, y: 11, landmark: '营', kind: 'camp', gate: 4 },
+  { level: 14, x: 38, y: 8, landmark: '塔', kind: 'tower', gate: 4 },
+  { level: 15, x: 18, y: 5, landmark: '巨鹿之战', kind: 'treasure', gate: 4, treasure: true },
+  { level: 16, x: 70, y: 3, landmark: '关', kind: 'gate', gate: 4 },
 ];
 
 function PuzzleCampaignMap({
   currentLevel,
   stamina,
-  onBackLobby,
   onOpenRank,
   onStartLevel,
 }: {
   currentLevel: number;
   stamina: number;
-  onBackLobby: () => void;
   onOpenRank: () => void;
   onStartLevel: (level?: number) => void;
 }) {
@@ -2243,13 +2821,26 @@ function PuzzleCampaignMap({
     scroll.scrollTop = scroll.scrollHeight - scroll.clientHeight;
   }, [currentLevel]);
 
+  const routeLinks = campaignNodeLayout.slice(1).map((node, index) => {
+    const from = campaignNodeLayout[index];
+    const dx = node.x - from.x;
+    const dy = node.y - from.y;
+    return {
+      key: `${from.level}-${node.level}`,
+      active: node.level <= currentLevel,
+      unlocking: node.level === currentLevel && currentLevel > 1,
+      style: {
+        left: `${from.x}%`,
+        top: `${from.y}%`,
+        width: `${Math.hypot(dx, dy)}%`,
+        transform: `rotate(${Math.atan2(dy, dx) * 180 / Math.PI}deg)`,
+      } as CSSProperties,
+    };
+  });
+
   return (
     <section className="campaign-map" aria-label="残局闯关地图">
       <div className="campaign-map-top">
-        <button className="round-button" aria-label="返回残局入口" onClick={onBackLobby}>
-          <ChevronLeft size={22} />
-        </button>
-        <strong>残局闯关</strong>
         <span>
           <Zap size={17} />
           {stamina}/10
@@ -2258,27 +2849,44 @@ function PuzzleCampaignMap({
       <div className="campaign-scroll" ref={scrollRef}>
         <div className="campaign-map-canvas">
           <div className="campaign-path" aria-hidden="true" />
+          {routeLinks.map((link) => (
+            <span
+              aria-hidden="true"
+              className={`campaign-link ${link.active ? 'is-active' : ''} ${link.unlocking ? 'is-unlocking' : ''}`}
+              key={link.key}
+              style={link.style}
+            />
+          ))}
           {campaignNodeLayout.map((node) => {
             const completed = node.level < currentLevel;
             const current = node.level === currentLevel;
             const locked = node.level > currentLevel;
+            const isFlag = node.kind === 'flag';
+            const title = node.level % 5 === 0 ? node.landmark : `第${node.level}关`;
             return (
               <button
-                className={`campaign-node ${completed ? 'is-completed' : ''} ${current ? 'is-current' : ''} ${locked ? 'is-locked' : ''}`}
+                className={`campaign-node campaign-node-${node.kind} ${completed ? 'is-completed' : ''} ${current ? 'is-current' : ''} ${locked ? 'is-locked' : ''}`}
                 disabled={locked}
                 key={node.level}
                 onClick={() => onStartLevel(node.level)}
                 style={{ left: `${node.x}%`, top: `${node.y}%` }}
               >
-                <span className="campaign-node-landmark">{node.treasure ? <Gift size={24} /> : node.landmark}</span>
-                <em>{node.level % 5 === 0 ? node.landmark : `第${node.level}关`}</em>
+                <span className="campaign-node-landmark">
+                  {isFlag ? (
+                    <span className="campaign-war-flag" aria-hidden="true">
+                      <i />
+                      <b>{node.landmark}</b>
+                    </span>
+                  ) : (
+                    <span className={`campaign-gate-art is-gate-${node.gate} ${node.treasure ? 'is-boss' : ''}`} aria-hidden="true">
+                      <i>{node.treasure ? <Gift size={16} /> : node.level}</i>
+                    </span>
+                  )}
+                </span>
+                <em>{title}</em>
               </button>
             );
           })}
-          <div className="campaign-reward-tease">
-            <Gift size={30} />
-            <span>通关120关获得</span>
-          </div>
         </div>
       </div>
       <div className="campaign-map-actions">
@@ -2302,14 +2910,15 @@ function PuzzleScreen({
   seconds,
   hintVisible,
   hintTarget,
+  puzzle,
   onSelectPoint,
   onReset,
+  onRestart,
   onHint,
   onComments,
   campaignLevel,
   campaignStamina,
   onBackCampaign,
-  onOpenRank,
 }: {
   attempt: XiangqiPuzzleAttempt;
   pieces: Piece[];
@@ -2320,35 +2929,44 @@ function PuzzleScreen({
   seconds: number;
   hintVisible: boolean;
   hintTarget: Position | null;
+  puzzle: Puzzle;
   onSelectPoint: (point: Position) => void;
   onReset: () => void;
+  onRestart: () => void;
   onHint: () => void;
   onComments: () => void;
   campaignLevel: number;
   campaignStamina: number;
   onBackCampaign: () => void;
-  onOpenRank: () => void;
 }) {
   const isCampaign = attempt.entryId === 'campaign';
+  const isImmersivePuzzle = isCampaign || attempt.entryId === 'daily';
   const statusText = status === 'solved'
     ? '挑战成功'
     : status === 'impossible' || status === 'failed'
       ? '当前已无法过关'
-      : '红先按最优路线';
-  const hintArrow = hintVisible ? dailyPuzzle.hints[0]?.arrow : undefined;
+      : puzzle.mode === 'free-mate'
+        ? attempt.session.turn === puzzle.sideToMove
+          ? '红方将死过关'
+          : '黑方引擎应手'
+        : `${attempt.session.turn === 'red' ? '红' : '黑'}方按最优路线`;
+  const hintArrow = hintVisible ? attempt.session.revealedHint?.arrow : undefined;
+  const hintDetail = hintVisible && attempt.session.revealedHint
+    ? `${attempt.session.revealedHint.title}${attempt.session.revealedHint.detail ? `：${attempt.session.revealedHint.detail}` : ''}`
+    : puzzle.mode === 'free-mate' ? '提示会给出当前推荐杀法方向' : '提示会按当前正解进度解释下一手';
   const marks = hintVisible && hintTarget ? [...legalMoves, hintTarget] : legalMoves;
   const introRows = getXiangqiPuzzleIntroRows(attempt.entryId);
   const menuActions = getXiangqiPuzzleMenuActions(attempt);
 
-  if (isCampaign) {
+  if (isImmersivePuzzle) {
     return (
-      <section className="campaign-play" aria-label="残局闯关棋局">
+      <section className="campaign-play" aria-label={isCampaign ? '残局闯关棋局' : '每日残局棋局'}>
         <aside className="campaign-player-card">
           <div className="campaign-avatar" aria-hidden="true">
-            {campaignLevel >= 5 ? <Flag size={26} /> : <Swords size={26} />}
+            {isCampaign ? campaignLevel >= 5 ? <Flag size={26} /> : <Swords size={26} /> : <Medal size={26} />}
           </div>
-          <strong>第{campaignLevel}关</strong>
-          <span>{campaignLevel >= 5 ? '揭竿而起' : '小兵'}</span>
+          <strong>{isCampaign ? `第${campaignLevel}关` : '每日残局'}</strong>
+          <span>{puzzle.title}</span>
         </aside>
         <div className="campaign-board-wrap">
           <ChessBoard
@@ -2363,14 +2981,14 @@ function PuzzleScreen({
         <aside className="campaign-rival-card">
           <span className="campaign-stamina">
             <Zap size={17} />
-            {campaignStamina}/10
+            {isCampaign ? campaignStamina : attempt.resources.stamina}/10
           </span>
           <div className="campaign-avatar is-rival" aria-hidden="true">
             <UserRound size={25} />
           </div>
           <strong>{moves}步</strong>
         </aside>
-        <nav className="campaign-tool-bar" aria-label="残局闯关局内工具">
+        <nav className="campaign-tool-bar" aria-label={isCampaign ? '残局闯关局内工具' : '每日残局局内工具'}>
           <button onClick={onBackCampaign}>
             <Home size={21} />
             <span>菜单</span>
@@ -2378,16 +2996,16 @@ function PuzzleScreen({
           <button onClick={onReset}>
             <RotateCcw size={21} />
             <span>悔棋</span>
-            <em>{Math.max(0, 2 - attempt.restarts)}</em>
+            <em>{Math.max(0, 2 - attempt.undos)}</em>
           </button>
           <button onClick={onHint}>
             <Lightbulb size={21} />
             <span>提示</span>
             <em>{attempt.resources.hintCards}</em>
           </button>
-          <button onClick={onOpenRank}>
-            <Trophy size={21} />
-            <span>排行</span>
+          <button onClick={onRestart}>
+            <RefreshCcw size={21} />
+            <span>重开</span>
           </button>
           <button onClick={() => onComments()}>
             <Share2 size={21} />
@@ -2401,8 +3019,8 @@ function PuzzleScreen({
   return (
     <section className="mode-shell">
       <div className="section-title">
-        <p className="eyebrow">每日残局</p>
-        <h2>{dailyPuzzle.title}</h2>
+        <p className="eyebrow">{isCampaign ? '残局闯关' : '每日残局'}</p>
+        <h2>{puzzle.title}</h2>
       </div>
       <div className="feature-grid">
         <ModeCard title="评分" value={`${calculatePuzzleScore(attempt)}分`} />
@@ -2416,8 +3034,10 @@ function PuzzleScreen({
           {introRows.slice(2).map((row) => (
             <InfoRow title={row.title} detail={row.detail} key={row.title} />
           ))}
+          <InfoRow title="题源" detail={puzzle.source ?? '本地精选残局'} />
+          <InfoRow title="杀法" detail={puzzle.motif ?? puzzle.goal.description} />
           <InfoRow title="局内菜单" detail={menuActions.join(' / ')} />
-          <InfoRow title="推荐" detail={hintVisible ? (dailyPuzzle.hints[0]?.title ?? '已显示推荐落点') : '提示可查看推荐落点'} />
+          <InfoRow title="推荐" detail={hintDetail} />
           <button className="full-width" onClick={onHint}>
             <Medal size={18} />
             提示
@@ -2426,7 +3046,7 @@ function PuzzleScreen({
             <MessageCircle size={18} />
             评论
           </button>
-          <button className="primary-action full-width" onClick={onReset}>
+          <button className="primary-action full-width" onClick={onRestart}>
             <RotateCcw size={18} />
             重来
           </button>
@@ -2560,8 +3180,10 @@ function PuzzleCampaignResultDialog({
   onNext: () => void;
 }) {
   const solved = resultKind === 'success';
-  const chapter = level >= 5 ? '5揭竿而起' : '第3关';
-  const stepText = `${Math.max(1, attempt.session.steps || dailyPuzzle.goal.maxMoves || 1)}步绝杀`;
+  const chapterNode = campaignNodeLayout.find((node) => node.level === level);
+  const chapter = chapterNode?.treasure ? `${level}${chapterNode.landmark}` : `第${level}关`;
+  const puzzle = getPuzzleById(attempt.puzzleId) ?? dailyPuzzle;
+  const stepText = `${Math.max(1, attempt.session.steps || puzzle.goal.maxMoves || 1)}步绝杀`;
   return (
     <div className="campaign-result-layer" role="dialog" aria-modal="true">
       <div className="campaign-result-card">
@@ -2648,7 +3270,13 @@ function PuzzleCampaignRankDialog({
   );
 }
 
-function JieqiScreen({ onBack }: { onBack: () => void }) {
+function JieqiScreen({
+  rankedMode = 'ten-minute',
+  onBack,
+}: {
+  rankedMode?: XiangqiMinuteArenaMode;
+  onBack: () => void;
+}) {
   const [jieqiState, setJieqiState] = useState<JieqiBoardState>(() => createJieqiBoardState());
   const [selectedPiece, setSelectedPiece] = useState<string | null>(null);
   const [legalMoves, setLegalMoves] = useState<Position[]>([]);
@@ -2666,15 +3294,28 @@ function JieqiScreen({ onBack }: { onBack: () => void }) {
     moveCount: number;
   }>>([]);
   const [moveCount, setMoveCount] = useState(0);
+  const jieqiAiRequestRef = useRef(0);
   const pieces = jieqiState.pieces;
   const displayPieces = toDisplayJieqiPieces(pieces, '');
   const captureStats = getJieqiCaptureStats(jieqiState);
   const admission = getJieqiAdmission('rating', { gold: 0, silver: 3830 });
+  const rankedSession = getMinuteArenaSession(rankedMode);
+  const rankedTime = rankedSession.timeControl;
+  const rankedTotalClock = formatClock(rankedTime.totalMinutes * 60);
+  const rankedSelfClock = formatClock(rankedTime.totalMinutes * 60 - 2);
+  const rankedStepClock = formatClock(rankedTime.openingMoveSeconds);
+  const rankedSelfStepClock = formatClock(Math.max(0, rankedTime.openingMoveSeconds - 2));
+  const rankedTimeLabel = `${rankedTime.totalMinutes}分钟,步时${rankedTime.moveSeconds}秒(前${rankedTime.openingMoveCount}步=${rankedTime.openingMoveSeconds}秒)`;
   const hiddenCount = Object.values(jieqiState.lifecycles).filter((item) => item.state === 'hidden').length;
+  const recentJieqiMove = jieqiState.moves[jieqiState.moves.length - 1] ?? null;
+
+  useEffect(() => () => {
+    jieqiAiRequestRef.current += 1;
+  }, []);
 
   function selectJieqiPoint(point: Position) {
     if (jieqiIntroOpen) return;
-    if (/胜|结束/.test(status) || settlement) return;
+    if (/胜|结束|思考/.test(status) || settlement) return;
     const selected = selectedPiece ? pieces.find((piece) => piece.id === selectedPiece) : undefined;
     const pointPiece = getJieqiPieceAt(pieces, point);
     if (selected && hasPoint(legalMoves, point)) {
@@ -2694,42 +3335,49 @@ function JieqiScreen({ onBack }: { onBack: () => void }) {
       if (!playerResult) return;
       setSelectedPiece(null);
       setLegalMoves([]);
-      setMoveCount((count) => count + 1);
+      setMoveCount(afterPlayer.moveCount);
       if (playerResult.captured?.kind === 'king') {
         setJieqiState(afterPlayer);
         setStatus('揭棋评测 · 我方胜');
         setSettlement(settleJieqiRating('win', afterPlayer));
         return;
       }
-      const aiMove = chooseAiMove(afterPlayer.pieces, moveCount + 1);
-      if (!aiMove) {
-        setJieqiState(afterPlayer);
-        setStatus('揭棋评测 · 我方胜');
-        setSettlement(settleJieqiRating('win', afterPlayer));
-        return;
-      }
-      const afterAi = applyJieqiStateMove(afterPlayer, aiMove.pieceId, aiMove.to);
-      const aiResult = afterAi.moves[afterAi.moves.length - 1];
-      if (!aiResult || afterAi.moveCount === afterPlayer.moveCount) {
-        setJieqiState(afterPlayer);
-        setStatus('揭棋评测 · 我方胜');
-        setSettlement(settleJieqiRating('win', afterPlayer));
-        return;
-      }
-      setJieqiState(afterAi);
-      setMoveCount((count) => count + 1);
-      if (aiResult.captured?.kind === 'king') {
-        setStatus('揭棋评测 · 对方胜');
-        setSettlement(settleJieqiRating('loss', afterAi));
-      } else {
-        setStatus('AI 已应手，红方继续');
-      }
+      setJieqiState(afterPlayer);
+      setStatus('AI 正在思考');
+      const requestId = jieqiAiRequestRef.current + 1;
+      jieqiAiRequestRef.current = requestId;
+      window.setTimeout(() => {
+        if (jieqiAiRequestRef.current !== requestId) return;
+        void chooseJieqiComputerMove(afterPlayer.pieces, 'black', { turnIndex: afterPlayer.moveCount }).then((aiMove) => {
+          if (jieqiAiRequestRef.current !== requestId) return;
+          if (!aiMove) {
+            setStatus('揭棋评测 · 我方胜');
+            setSettlement(settleJieqiRating('win', afterPlayer));
+            return;
+          }
+          const afterAi = applyJieqiStateMove(afterPlayer, aiMove.pieceId, aiMove.to);
+          const aiResult = afterAi.moves[afterAi.moves.length - 1];
+          if (!aiResult || afterAi.moveCount === afterPlayer.moveCount) {
+            setStatus('揭棋评测 · 我方胜');
+            setSettlement(settleJieqiRating('win', afterPlayer));
+            return;
+          }
+          setJieqiState(afterAi);
+          setMoveCount(afterAi.moveCount);
+          if (aiResult.captured?.kind === 'king') {
+            setStatus('揭棋评测 · 对方胜');
+            setSettlement(settleJieqiRating('loss', afterAi));
+          } else {
+            setStatus('AI 已应手，红方继续');
+          }
+        });
+      }, 450);
       return;
     }
     if (pointPiece?.side === 'red') {
       setSelectedPiece(pointPiece.id);
       setLegalMoves(getJieqiLegalMoves(pieces, pointPiece.id));
-      setStatus(pointPiece.hidden ? '暗子按真实身份生成落点' : `${pointPiece.label}可走`);
+      setStatus(pointPiece.hidden ? '暗子按所在位置走法生成落点' : `${pointPiece.label}可走`);
       return;
     }
     setSelectedPiece(null);
@@ -2737,6 +3385,7 @@ function JieqiScreen({ onBack }: { onBack: () => void }) {
   }
 
   function resetJieqi() {
+    jieqiAiRequestRef.current += 1;
     setJieqiState(createJieqiBoardState());
     setSelectedPiece(null);
     setLegalMoves([]);
@@ -2750,6 +3399,7 @@ function JieqiScreen({ onBack }: { onBack: () => void }) {
   }
 
   function undoJieqiRound() {
+    jieqiAiRequestRef.current += 1;
     if (jieqiUndoLeft <= 0) {
       setStatus('悔棋次数已用完');
       setJieqiMenuOpen(false);
@@ -2785,8 +3435,8 @@ function JieqiScreen({ onBack }: { onBack: () => void }) {
         <strong>陈俊池</strong>
         <span>[揭1-1]</span>
         <div className="jieqi-clock-stack" aria-label="对方计时">
-          <b><Clock3 size={16} />10:00</b>
-          <b><Clock3 size={16} />00:30</b>
+          <b><Clock3 size={16} />{rankedTotalClock}</b>
+          <b><Clock3 size={16} />{rankedStepClock}</b>
         </div>
       </aside>
 
@@ -2795,6 +3445,7 @@ function JieqiScreen({ onBack }: { onBack: () => void }) {
           pieces={displayPieces}
           selectedPiece={selectedPiece ?? undefined}
           marks={legalMoves}
+          recentMove={recentJieqiMove}
           onSelectPoint={selectJieqiPoint}
         />
         <div className="jieqi-status-line" role="status">
@@ -2810,8 +3461,8 @@ function JieqiScreen({ onBack }: { onBack: () => void }) {
         <strong>Meteor</strong>
         <span>[揭1-1]</span>
         <div className="jieqi-clock-stack" aria-label="我方计时">
-          <b><Clock3 size={16} />09:58</b>
-          <b><Clock3 size={16} />00:28</b>
+          <b><Clock3 size={16} />{rankedSelfClock}</b>
+          <b><Clock3 size={16} />{rankedSelfStepClock}</b>
         </div>
       </aside>
 
@@ -2826,7 +3477,7 @@ function JieqiScreen({ onBack }: { onBack: () => void }) {
 
       <div className="jieqi-hidden-meta" aria-hidden="true">
         {getJieqiEntryRows('rating').map((row) => (
-          <span key={row.id}>{row.label}:{row.value}</span>
+          <span key={row.id}>{row.label}:{row.id === 'time-control' ? rankedTimeLabel : row.value}</span>
         ))}
         <span>入场:{admission.canEnter ? '门票2000' : '准入提示'}</span>
       </div>
@@ -2838,7 +3489,7 @@ function JieqiScreen({ onBack }: { onBack: () => void }) {
             <div className="jieqi-intro-copy">
               <strong>对局门票：2000</strong>
               <strong>输赢结算棋力分</strong>
-              <strong>10分钟,步时60秒(前3步=30秒)</strong>
+              <strong>{rankedTimeLabel}</strong>
             </div>
             <button className="jieqi-start-button" onClick={() => setJieqiIntroOpen(false)} type="button">
               开始
@@ -2907,47 +3558,153 @@ function JieqiMenuDialog({
   );
 }
 
-function MoreGamesScreen({
-  board,
-  status,
+function FlipChessScreen({
   onBack,
-  onPoint,
-  onReset,
 }: {
-  board: number[][];
-  status: string;
   onBack: () => void;
-  onPoint: (x: number, y: number) => void;
-  onReset: () => void;
 }) {
-  const [flipState, setFlipState] = useState<XiangqiFlipChessGameState>(() => createFlipChessGame({ arenaId: 'training', seed: 8 }));
+  const [flipState, setFlipState] = useState<XiangqiFlipChessGameState>(() => createFlipChessGame({ arenaId: 'training', seed: Date.now() % 100000 }));
   const [selectedFlipPiece, setSelectedFlipPiece] = useState<string | null>(null);
   const [flipStatus, setFlipStatus] = useState('抢红争先或不抢后开始');
   const [flipSettlement, setFlipSettlement] = useState<XiangqiFlipChessSettlement | null>(null);
+  const [flipResultOpen, setFlipResultOpen] = useState(false);
+  const [flipOpeningStage, setFlipOpeningStage] = useState<FlipOpeningStage>('shining');
+  const [flipPreviewCells, setFlipPreviewCells] = useState<string[]>([]);
   const [rulesOpen, setRulesOpen] = useState(false);
-  const [exitOpen, setExitOpen] = useState(false);
+  const [flipMenuOpen, setFlipMenuOpen] = useState(false);
+  const [flipCaptureReveal, setFlipCaptureReveal] = useState<FlipCaptureReveal | null>(null);
+  const flipPreviewStartedRef = useRef<string | null>(null);
   const revealedCount = flipState.pieces.filter((piece) => !piece.hidden).length;
   const multiplier = `${flipState.multiplier}倍`;
+  const playerSide = flipState.playerSide ?? 'red';
+  const rivalSide = getOppositeFlipSide(playerSide);
   const trophies = getFlipChessTrophySidebar(flipState);
+  const hpBySide = { red: flipState.redHp, black: flipState.blackHp };
+  const selfHp = hpBySide[playerSide];
+  const rivalHp = hpBySide[rivalSide];
+  const selfTrophies = trophies[playerSide].map((stack) => `${formatFlipSide(stack.side)}${stack.label}${stack.count}`).join('、') || '暂无';
+  const rivalTrophies = trophies[rivalSide].map((stack) => `${formatFlipSide(stack.side)}${stack.label}${stack.count}`).join('、') || '暂无';
+  const flipTurnLabel = flipState.phase === 'playing' && flipState.turnSide
+    ? `${formatFlipSide(flipState.turnSide)}回合`
+    : flipState.phase === 'finished'
+      ? '本局结束'
+      : '等待抢红';
+
+  useEffect(() => {
+    if (flipSettlement?.winnerSide) setFlipResultOpen(true);
+  }, [flipSettlement]);
+
+  useEffect(() => {
+    if (!flipCaptureReveal) return undefined;
+    const timer = window.setTimeout(() => setFlipCaptureReveal(null), 1800);
+    return () => window.clearTimeout(timer);
+  }, [flipCaptureReveal]);
+
+  useEffect(() => {
+    if (
+      flipState.phase !== 'playing' ||
+      !flipState.playerSide ||
+      !flipState.turnSide ||
+      flipState.turnSide === flipState.playerSide
+    ) {
+      return undefined;
+    }
+
+    const expectedMoveNumber = flipState.moveNumber;
+    const timer = window.setTimeout(() => {
+      setFlipState((current) => {
+        if (
+          current.id !== flipState.id ||
+          current.phase !== 'playing' ||
+          current.moveNumber !== expectedMoveNumber ||
+          !current.playerSide ||
+          !current.turnSide ||
+          current.turnSide === current.playerSide
+        ) {
+          return current;
+        }
+        const action = chooseFlipRivalAction(current);
+        if (!action) {
+          setFlipStatus(`${formatFlipSide(current.turnSide)}暂无可走`);
+          return current;
+        }
+        setSelectedFlipPiece(null);
+        setFlipStatus(action.state.records[action.state.records.length - 1]?.notation ?? `${formatFlipSide(current.turnSide)}已走棋`);
+        if (action.reveal) setFlipCaptureReveal(action.reveal);
+        if (action.state.phase === 'finished') {
+          setFlipSettlement(createFlipChessSettlement(action.state, action.state.playerSide ?? 'red', 3530));
+        }
+        return action.state;
+      });
+    }, 720);
+
+    setSelectedFlipPiece(null);
+    setFlipStatus(`${formatFlipSide(flipState.turnSide)}思考中`);
+    return () => window.clearTimeout(timer);
+  }, [flipState.id, flipState.moveNumber, flipState.phase, flipState.playerSide, flipState.turnSide]);
+
+  useEffect(() => {
+    if (flipState.phase !== 'red-choice' || flipPreviewStartedRef.current === flipState.id) return undefined;
+    flipPreviewStartedRef.current = flipState.id;
+    const previewCells = chooseFlipOpeningPreviewCells(flipState);
+    setFlipPreviewCells(previewCells);
+    setFlipOpeningStage('shining');
+    setFlipStatus('四道金光闪过，随机预揭四枚棋子');
+
+    const revealTimer = window.setTimeout(() => {
+      setFlipState((current) => (
+        current.id === flipState.id && current.phase === 'red-choice'
+          ? previewFlipChessOpening(current, previewCells)
+          : current
+      ));
+      setFlipStatus('预揭完成，请选择是否抢红');
+    }, 620);
+    const choiceTimer = window.setTimeout(() => {
+      setFlipOpeningStage('choice');
+    }, 1250);
+
+    return () => {
+      window.clearTimeout(revealTimer);
+      window.clearTimeout(choiceTimer);
+      if (flipPreviewStartedRef.current === flipState.id) {
+        flipPreviewStartedRef.current = null;
+      }
+    };
+  }, [flipState.id, flipState.phase]);
 
   function chooseOpening(claimRed: boolean) {
+    setFlipPreviewCells([]);
     setFlipState((current) => chooseFlipChessOpening(current, claimRed ? 'claim-red' : 'pass'));
-    setFlipStatus(claimRed ? '已抢红争先，红方先动' : '不抢，红方先动');
+    setFlipStatus(claimRed ? '已抢红争先，你执红先动' : '不抢，你执黑，等待红方先动');
   }
 
-  function finishLocalFlipWin() {
+  function resignFlipGame() {
+    setFlipMenuOpen(false);
+    setSelectedFlipPiece(null);
     setFlipState((current) => {
+      const playerSide = current.playerSide ?? 'red';
+      const winnerSide = playerSide === 'red' ? 'black' : 'red';
       const finished: XiangqiFlipChessGameState = {
         ...current,
         phase: 'finished',
-        result: current.playerSide === 'black' ? 'black-win' : 'red-win',
-        redHp: current.playerSide === 'black' ? 0 : current.redHp,
-        blackHp: current.playerSide === 'black' ? current.blackHp : 0,
+        result: winnerSide === 'red' ? 'red-win' : 'black-win',
+        redHp: winnerSide === 'red' ? current.redHp : 0,
+        blackHp: winnerSide === 'black' ? current.blackHp : 0,
         turnSide: null,
       };
-      setFlipSettlement(createFlipChessSettlement(finished, finished.playerSide ?? 'red', 3530));
+      setFlipSettlement(createFlipChessSettlement(finished, playerSide, 3530));
       return finished;
     });
+  }
+
+  function offerFlipDraw() {
+    setFlipMenuOpen(false);
+    setFlipStatus('已发送提和，本地训练场暂不结算');
+  }
+
+  function openFlipSettings() {
+    setFlipMenuOpen(false);
+    setFlipStatus('设置功能为本地占位');
   }
 
   function handleFlipCell(cellId: string) {
@@ -2956,7 +3713,15 @@ function MoreGamesScreen({
       return;
     }
     if (flipState.phase === 'finished') return;
+    if (flipState.playerSide && flipState.turnSide && flipState.turnSide !== flipState.playerSide) {
+      setSelectedFlipPiece(null);
+      setFlipStatus(`等待${formatFlipSide(flipState.turnSide)}走棋`);
+      return;
+    }
     const piece = flipState.pieces.find((item) => item.cellId === cellId && !item.captured);
+    const selectedAttacker = selectedFlipPiece
+      ? flipState.pieces.find((item) => item.id === selectedFlipPiece && !item.captured)
+      : null;
     if (!piece) {
       if (!selectedFlipPiece) return;
       try {
@@ -2965,24 +3730,87 @@ function MoreGamesScreen({
         setSelectedFlipPiece(null);
         setFlipStatus(next.records[next.records.length - 1]?.notation ?? '已移动');
       } catch (error) {
-        setFlipStatus(error instanceof Error ? error.message : '这步暂不可走');
+        setFlipStatus(formatFlipActionError(error, '这步暂不可走'));
       }
       return;
     }
     if (piece.hidden) {
+      if (selectedAttacker?.kind === 'cannon' && selectedAttacker.id !== piece.id) {
+        try {
+          const next = captureFlipChessPiece(flipState, selectedAttacker.id, cellId);
+          setFlipState(next);
+          setSelectedFlipPiece(null);
+          setFlipCaptureReveal({
+            id: Date.now(),
+            attackerLabel: selectedAttacker.label,
+            side: piece.side,
+            label: piece.label,
+          });
+          setFlipStatus(next.records[next.records.length - 1]?.notation ?? '已吃子');
+          if (next.phase === 'finished') {
+            setFlipSettlement(createFlipChessSettlement(next, next.playerSide ?? 'red', 3530));
+          }
+        } catch (error) {
+          setFlipStatus(formatFlipActionError(error, '炮需要隔一个子才能吃'));
+        }
+        return;
+      }
       try {
         const next = flipFlipChessPiece(flipState, cellId);
         setFlipState(next);
         setSelectedFlipPiece(null);
         setFlipStatus(next.records[next.records.length - 1]?.notation ?? '已翻开暗子');
       } catch (error) {
-        setFlipStatus(error instanceof Error ? error.message : '该暗子暂不可翻');
+        setFlipStatus(formatFlipActionError(error, '该暗子暂不可翻'));
       }
+      return;
+    }
+    if (selectedFlipPiece === piece.id) {
+      setSelectedFlipPiece(null);
+      setFlipStatus(`已取消选择${formatFlipSide(piece.side)}${piece.label}`);
+      return;
+    }
+    if (selectedAttacker?.kind === 'cannon' && selectedAttacker.id !== piece.id && piece.side === flipState.turnSide) {
+      try {
+        const next = captureFlipChessPiece(flipState, selectedAttacker.id, cellId);
+        setFlipState(next);
+        setSelectedFlipPiece(null);
+        setFlipStatus(next.records[next.records.length - 1]?.notation ?? '已吃子');
+        if (next.phase === 'finished') {
+          setFlipSettlement(createFlipChessSettlement(next, next.playerSide ?? 'red', 3530));
+        }
+      } catch {
+        setSelectedFlipPiece(piece.id);
+        setFlipStatus(`${formatFlipSide(piece.side)}${piece.label}已选中`);
+      }
+      return;
+    }
+    if (
+      selectedAttacker &&
+      selectedAttacker.id !== piece.id &&
+      (selectedAttacker.kind === 'cannon' || piece.side !== flipState.turnSide)
+    ) {
+      try {
+        const next = captureFlipChessPiece(flipState, selectedAttacker.id, cellId);
+        setFlipState(next);
+        setSelectedFlipPiece(null);
+        setFlipStatus(next.records[next.records.length - 1]?.notation ?? '已吃子');
+        if (next.phase === 'finished') {
+          setFlipSettlement(createFlipChessSettlement(next, next.playerSide ?? 'red', 3530));
+        }
+      } catch (error) {
+        setFlipStatus(formatFlipActionError(error, '不能吃这个棋子'));
+      }
+      return;
+    }
+    if (!selectedFlipPiece && piece.side !== flipState.turnSide) {
+      setSelectedFlipPiece(null);
+      setFlipStatus(`当前是${flipState.turnSide ? formatFlipSide(flipState.turnSide) : '本方'}回合，不能操作${formatFlipSide(piece.side)}棋子`);
       return;
     }
     if (!selectedFlipPiece || selectedFlipPiece === piece.id || piece.side === flipState.turnSide) {
       setSelectedFlipPiece(piece.id);
-      setFlipStatus(`${piece.side === 'red' ? '红方' : '黑方'}${piece.label}已选中`);
+      setFlipStatus(`${formatFlipSide(piece.side)}${piece.label}已选中`);
       return;
     }
     try {
@@ -2994,111 +3822,430 @@ function MoreGamesScreen({
         setFlipSettlement(createFlipChessSettlement(next, next.playerSide ?? 'red', 3530));
       }
     } catch (error) {
-      setFlipStatus(error instanceof Error ? error.message : '不能吃这个棋子');
+      setFlipStatus(formatFlipActionError(error, '不能吃这个棋子'));
     }
   }
 
   function resetFlipPieces() {
-    setFlipState(createFlipChessGame({ arenaId: 'training', seed: Date.now() % 31 }));
+    setFlipState(createFlipChessGame({ arenaId: 'training', seed: Date.now() % 100000 }));
     setSelectedFlipPiece(null);
     setFlipSettlement(null);
+    setFlipResultOpen(false);
+    setFlipMenuOpen(false);
+    setFlipCaptureReveal(null);
+    setFlipOpeningStage('shining');
+    setFlipPreviewCells([]);
+    flipPreviewStartedRef.current = null;
     setFlipStatus('抢红争先或不抢后开始');
   }
 
   return (
-    <section className="mode-shell">
-      <div className="play-screen-title">
+    <section className="flip-match-screen">
+      <div className="flip-match-topbar">
         <button className="round-button" aria-label="返回更多玩法" onClick={onBack} type="button">
           <ChevronLeft size={22} />
         </button>
-        <div className="section-title">
-          <p className="eyebrow">更多玩法</p>
-          <h2>翻翻棋与五子棋</h2>
+        <div className="flip-match-title">
+          <strong>翻翻棋</strong>
+          <span>新手训练场</span>
         </div>
+        <button className="round-button" aria-label="翻翻棋帮助" onClick={() => setRulesOpen(true)} type="button">
+          <HelpCircle size={22} />
+        </button>
       </div>
-      <div className="feature-grid">
-        <ModeCard title="翻翻棋" value={`${revealedCount}/32`} />
-        <ModeCard title="五子棋" value={status} />
-        <ModeCard title="倍率" value={multiplier} />
-        <ModeCard title="血量" value={`红${flipState.redHp}/黑${flipState.blackHp}`} />
-      </div>
-      <div className="mode-play-grid">
+
+      <div className="flip-match-board-area">
+        <div className="flip-player-strip is-rival">
+          <PlayerBadge name="逸晨" rank={`${formatFlipSide(rivalSide)} · 银币 206.9万`} active={flipState.turnSide === rivalSide} />
+          <div className="flip-hp-line">
+            <span>{rivalSide === 'red' ? '红' : '黑'} {rivalHp}/{flipState.arena.initialHp}</span>
+            <i><b style={{ width: `${(rivalHp / flipState.arena.initialHp) * 100}%` }} /></i>
+          </div>
+          <span className="flip-trophy-line">对方吃子：{rivalTrophies}</span>
+        </div>
+
         <FlipBoard
           state={flipState}
           selectedPiece={selectedFlipPiece}
+          previewCells={flipOpeningStage === 'shining' ? flipPreviewCells : []}
           onCell={handleFlipCell}
         />
-        <div className="flip-side-panel">
-          <div className="flip-player-row">
-            <PlayerBadge name="我方" rank={`银币 ${flipSettlement?.balanceAfter ?? 3530}`} active />
-            <div className="hp-track"><span style={{ width: `${(flipState.redHp / flipState.arena.initialHp) * 100}%` }} /></div>
+
+        <div className="flip-player-strip is-self">
+          <PlayerBadge name="我方" rank={`${formatFlipSide(playerSide)} · 银币 ${flipSettlement?.balanceAfter ?? 3530}`} active={flipState.turnSide === playerSide} />
+          <div className="flip-hp-line">
+            <span>{playerSide === 'red' ? '红' : '黑'} {selfHp}/{flipState.arena.initialHp}</span>
+            <i><b style={{ width: `${(selfHp / flipState.arena.initialHp) * 100}%` }} /></i>
           </div>
-          <div className="flip-player-row">
-            <PlayerBadge name="逸晨" rank="银币 206.9万" />
-            <div className="hp-track is-rival"><span style={{ width: `${(flipState.blackHp / flipState.arena.initialHp) * 100}%` }} /></div>
+          <span className="flip-trophy-line">我方吃子：{selfTrophies}</span>
+        </div>
+
+        {flipState.phase === 'red-choice' && flipOpeningStage === 'shining' && (
+          <div className="flip-opening-flash" role="status">
+            <Star size={18} />
+            随机预揭四枚棋子
           </div>
-          {getFlipChessArenaRows('training').map((row) => (
+        )}
+        {flipCaptureReveal && (
+          <div className={`flip-capture-reveal is-${flipCaptureReveal.side}`} role="status">
+            <span>{flipCaptureReveal.attackerLabel}打暗子</span>
+            <strong>{formatFlipSide(flipCaptureReveal.side)}{flipCaptureReveal.label}</strong>
+          </div>
+        )}
+        {flipState.phase !== 'red-choice' && (
+          <div className="flip-status-badge" role="status">
+            <strong>{flipTurnLabel}</strong>
+            <span>{flipStatus}</span>
+          </div>
+        )}
+      </div>
+
+      {flipState.phase !== 'red-choice' && (
+        <nav className="flip-bottom-actions" aria-label="翻翻棋局内操作">
+          <button className="round-button" aria-label="打开翻翻棋菜单" onClick={() => setFlipMenuOpen((open) => !open)} type="button">
+            <House size={24} />
+          </button>
+        </nav>
+      )}
+      {flipState.phase !== 'red-choice' && flipMenuOpen && (
+        <div className="flip-action-menu" role="menu" aria-label="翻翻棋局内菜单">
+          <button onClick={onBack} role="menuitem" type="button">
+            <ChevronLeft size={30} />
+            离开
+          </button>
+          <button onClick={resignFlipGame} role="menuitem" type="button">
+            <Flag size={30} />
+            认输
+          </button>
+          <button onClick={offerFlipDraw} role="menuitem" type="button">
+            <MessageCircle size={28} />
+            提和
+          </button>
+          <button onClick={openFlipSettings} role="menuitem" type="button">
+            <Settings size={30} />
+            设置
+          </button>
+        </div>
+      )}
+      {flipState.phase === 'red-choice' && flipOpeningStage === 'choice' && (
+        <FlipOpeningDialog
+          arenaRows={getFlipChessArenaRows('training')}
+          onClaimRed={() => chooseOpening(true)}
+          onPass={() => chooseOpening(false)}
+        />
+      )}
+      {rulesOpen && <FlipRulesDialog onClose={() => setRulesOpen(false)} />}
+      {flipSettlement && flipResultOpen && (
+        <FlipResultDialog
+          settlement={flipSettlement}
+          onBack={onBack}
+          onClose={() => setFlipResultOpen(false)}
+          onReset={resetFlipPieces}
+        />
+      )}
+    </section>
+  );
+}
+
+function FlipResultDialog({
+  settlement,
+  onBack,
+  onClose,
+  onReset,
+}: {
+  settlement: XiangqiFlipChessSettlement;
+  onBack: () => void;
+  onClose: () => void;
+  onReset: () => void;
+}) {
+  const didWin = settlement.coinDelta >= 0;
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true">
+      <div className="flip-result-card">
+        <Trophy size={44} aria-hidden="true" />
+        <p className="eyebrow">翻翻棋结算</p>
+        <h2>{settlement.title}</h2>
+        <strong className={didWin ? 'is-win' : 'is-loss'}>{settlement.summary}</strong>
+        <div className="flip-result-rows">
+          {settlement.rows.slice(0, 5).map((row) => (
             <InfoRow title={row.title} detail={row.detail} key={row.title} />
           ))}
-          <InfoRow title="当前倍率" detail={multiplier} />
-          <InfoRow title="玩法状态" detail={flipStatus} />
-          <InfoRow title="我方战利品" detail={trophies.red.map((stack) => `${stack.label}${stack.count}`).join('、') || '暂无'} />
-          <InfoRow title="对方战利品" detail={trophies.black.map((stack) => `${stack.label}${stack.count}`).join('、') || '暂无'} />
-          {flipState.phase === 'red-choice' && (
-            <div className="result-actions">
-              <button className="primary-action" onClick={() => chooseOpening(true)}>抢红争先</button>
-              <button onClick={() => chooseOpening(false)}>不抢</button>
-            </div>
-          )}
-          {flipSettlement && (
-            <div className="intro-rules">
-              <InfoRow title={flipSettlement.title} detail={flipSettlement.summary} />
-              {flipSettlement.rows.map((row) => (
-                <InfoRow title={row.title} detail={row.detail} key={row.title} />
-              ))}
-            </div>
-          )}
-          <div className="result-actions">
-            <button onClick={() => setRulesOpen(true)}>规则</button>
-            <button onClick={resetFlipPieces}>重置翻子</button>
-            <button onClick={() => setExitOpen(true)}>强退</button>
-            <button onClick={finishLocalFlipWin}>本地结算</button>
-          </div>
-          <div className="gobang-mini">
-            <GobangBoard board={board} onPoint={onPoint} />
-            <button className="primary-action full-width" onClick={onReset}>
-              <RotateCcw size={18} />
-              重开五子棋
-            </button>
-          </div>
+        </div>
+        <div className="result-actions">
+          <button onClick={onClose}>查看棋盘</button>
+          <button onClick={onBack}>返回</button>
+          <button className="primary-action" onClick={onReset}>
+            <RotateCcw size={18} />
+            再来一局
+          </button>
         </div>
       </div>
-      {rulesOpen && <FlipRulesDialog onClose={() => setRulesOpen(false)} />}
-      {exitOpen && <FlipExitDialog onCancel={() => setExitOpen(false)} onConfirm={() => setExitOpen(false)} />}
+    </div>
+  );
+}
+
+function FlipOpeningDialog({
+  arenaRows,
+  onClaimRed,
+  onPass,
+}: {
+  arenaRows: Array<{ title: string; detail: string }>;
+  onClaimRed: () => void;
+  onPass: () => void;
+}) {
+  return (
+    <div className="modal-layer is-flip-opening" role="dialog" aria-modal="true">
+      <div className="flip-opening-card">
+        <p className="eyebrow">翻翻棋开局</p>
+        <h2>抢红争先</h2>
+        <div className="intro-rules">
+          {arenaRows.slice(0, 4).map((row) => (
+            <InfoRow title={row.title} detail={row.detail} key={row.title} />
+          ))}
+        </div>
+        <div className="flip-opening-actions">
+          <button className="primary-action" onClick={onClaimRed} type="button">
+            <Flame size={18} />
+            抢红争先
+          </button>
+          <button onClick={onPass} type="button">
+            不抢
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GobangScreen({
+  board,
+  status,
+  lastMove,
+  difficulty,
+  drawOffersLeft,
+  undoLeft,
+  onBack,
+  onDraw,
+  onPoint,
+  onReset,
+  onUndo,
+}: {
+  board: number[][];
+  status: string;
+  lastMove: Position | null;
+  difficulty: GobangDifficulty;
+  drawOffersLeft: number;
+  undoLeft: number;
+  onBack: () => void;
+  onDraw: () => void;
+  onPoint: (x: number, y: number) => void;
+  onReset: () => void;
+  onUndo: () => void;
+}) {
+  const [rulesOpen, setRulesOpen] = useState(false);
+  const [resultOpen, setResultOpen] = useState(false);
+  const difficultyOption = gobangDifficultyOptions.find((option) => option.id === difficulty) ?? gobangDifficultyOptions[1];
+  const moves = board.flat().filter(Boolean).length;
+  const blackStones = board.flat().filter((cell) => cell === 1).length;
+  const whiteStones = board.flat().filter((cell) => cell === 2).length;
+  const isFinished = /胜|满|和棋/.test(status);
+  const boardPrompt = status === '黑先手' ? `黑方执子，对弈${difficultyOption.label}人机` : status;
+
+  useEffect(() => {
+    setResultOpen(isFinished);
+  }, [isFinished, status]);
+
+  return (
+    <section className="gobang-match-screen">
+      <div className="gobang-match-topbar">
+        <button className="round-button" aria-label="返回更多玩法" onClick={onBack} type="button">
+          <ChevronLeft size={22} />
+        </button>
+        <div>
+          <small>欢乐五子棋</small>
+          <strong>{boardPrompt}</strong>
+        </div>
+        <span>{moves}手</span>
+      </div>
+
+      <div className="gobang-match-board-area">
+        <div className="gobang-player-head is-rival">
+          <PlayerBadge name="小天" rank={difficultyOption.rival} active={!isFinished && status.includes('白方')} />
+          <span>白 {whiteStones}</span>
+        </div>
+        <GobangBoard board={board} lastMove={lastMove} onPoint={onPoint} />
+        <div className="gobang-player-head">
+          <PlayerBadge name="我方" rank="黑子 · 业余新手" active={!isFinished && !status.includes('白方')} />
+          <span>黑 {blackStones}</span>
+        </div>
+      </div>
+
+      <div className="gobang-bottom-menu" role="toolbar" aria-label="五子棋菜单">
+        <button onClick={onBack} type="button">
+          <ChevronLeft size={20} />
+          返回
+        </button>
+        <button onClick={onReset} type="button">
+          <RotateCcw size={20} />
+          再来
+        </button>
+        <button onClick={() => setRulesOpen(true)} type="button">
+          <HelpCircle size={20} />
+          规则
+        </button>
+        <button onClick={onUndo} type="button">
+          <SkipBack size={20} />
+          悔棋({undoLeft})
+        </button>
+        <button onClick={onDraw} type="button">
+          <MessageCircle size={20} />
+          求和({drawOffersLeft})
+        </button>
+      </div>
+      {rulesOpen && <GobangRulesDialog onClose={() => setRulesOpen(false)} />}
+      {resultOpen && (
+        <GobangResultDialog
+          moves={moves}
+          onBack={onBack}
+          onClose={() => setResultOpen(false)}
+          onReset={onReset}
+          status={status}
+        />
+      )}
     </section>
+  );
+}
+
+function GobangResultDialog({
+  moves,
+  status,
+  onBack,
+  onClose,
+  onReset,
+}: {
+  moves: number;
+  status: string;
+  onBack: () => void;
+  onClose: () => void;
+  onReset: () => void;
+}) {
+  const title = status === '黑方胜' ? '黑棋胜利' : status === '白方胜' ? '白棋胜利' : status === '双方和棋' ? '双方和棋' : '棋盘已满';
+  const summary = status === '黑方胜' ? '你率先连成五子' : status === '白方胜' ? '小天率先连成五子' : status === '双方和棋' ? '本局以和棋收束' : '双方未分胜负';
+
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true">
+      <div className="gobang-result-card">
+        <Trophy size={44} aria-hidden="true" />
+        <p className="eyebrow">欢乐五子棋</p>
+        <h2>{title}</h2>
+        <span>{summary} · 共 {moves} 手</span>
+        <div className="result-actions">
+          <button onClick={onClose}>查看棋盘</button>
+          <button onClick={onBack}>返回</button>
+          <button className="primary-action" onClick={onReset}>
+            <RotateCcw size={18} />
+            再来一局
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GobangRulesDialog({ onClose }: { onClose: () => void }) {
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true">
+      <div className="confirm-card">
+        <p className="eyebrow">欢乐五子棋规则</p>
+        <h2>五连即胜</h2>
+        <div className="intro-rules">
+          <InfoRow title="落子" detail="双方轮流在空交叉点落子，黑方先行。" />
+          <InfoRow title="胜利" detail="横、竖或斜向连续五枚同色棋子立即获胜。" />
+          <InfoRow title="本地场" detail="采用自由五子棋规则，暂不加入三三、四四等禁手。" />
+          <InfoRow title="人机" detail="可选择入门、标准、高手三档，高手会额外预判你的下一手威胁。" />
+          <InfoRow title="辅助" detail="每局悔棋和求和各 3 次，悔棋会回到你上一手落子前。" />
+        </div>
+        <button className="primary-action full-width" onClick={onClose}>知道了</button>
+      </div>
+    </div>
+  );
+}
+
+function GobangDifficultyDialog({
+  selected,
+  onClose,
+  onSelect,
+}: {
+  selected: GobangDifficulty;
+  onClose: () => void;
+  onSelect: (difficulty: GobangDifficulty) => void;
+}) {
+  return (
+    <div className="modal-layer" role="dialog" aria-modal="true">
+      <div className="gobang-difficulty-card">
+        <p className="eyebrow">欢乐五子棋</p>
+        <h2>选择棋力</h2>
+        <div className="gobang-difficulty-list">
+          {gobangDifficultyOptions.map((option) => (
+            <button
+              className={option.id === selected ? 'is-selected' : ''}
+              key={option.id}
+              onClick={() => onSelect(option.id)}
+              type="button"
+            >
+              <span>
+                <strong>{option.label}</strong>
+                <small>{option.detail}</small>
+              </span>
+              <Swords size={20} aria-hidden="true" />
+            </button>
+          ))}
+        </div>
+        <button className="ghost-action full-width" onClick={onClose} type="button">先不开始</button>
+      </div>
+    </div>
   );
 }
 
 function FlipBoard({
   state,
   selectedPiece,
+  previewCells = [],
   onCell,
 }: {
   state: XiangqiFlipChessGameState;
   selectedPiece: string | null;
+  previewCells?: string[];
   onCell: (cellId: string) => void;
 }) {
+  const previewCellSet = new Set(previewCells);
   return (
-    <div className="flip-board" aria-label="翻翻棋棋盘">
-      {state.board.cells.map((cellId) => {
+    <div className={`flip-board ${state.turnSide ? `is-${state.turnSide}-turn` : ''}`} aria-label="翻翻棋棋盘">
+      {state.board.cells.map((cellId, index) => {
         const piece = state.pieces.find((item) => item.cellId === cellId && !item.captured);
+        const pieceImage = getFlipPieceImage(piece);
+        const row = Math.floor(index / state.board.cols) + 1;
+        const column = (index % state.board.cols) + 1;
+        const pieceLabel = !piece ? `空位 ${column}-${row}` : piece.hidden ? `暗子 ${column}-${row}` : `${piece.side === 'red' ? '红方' : '黑方'}${piece.label} ${column}-${row}`;
         return (
         <button
-          className={`flip-piece ${piece?.hidden ? 'is-hidden' : piece?.side ?? 'is-empty'} ${piece?.id === selectedPiece ? 'is-selected' : ''}`}
+          aria-label={pieceLabel}
+          className={`flip-cell ${piece ? 'has-piece' : 'is-empty'} ${previewCellSet.has(cellId) ? 'is-previewing' : ''} ${piece?.hidden ? 'is-hidden' : piece?.side ?? ''} ${piece?.id === selectedPiece ? 'is-selected' : ''}`}
           key={cellId}
           onClick={() => onCell(cellId)}
+          type="button"
         >
-          {!piece ? '' : piece.hidden ? '暗' : piece.label}
+          <span className="flip-cell-cross" aria-hidden="true" />
+          {piece ? (
+            <span className={`flip-piece ${piece.hidden ? 'is-hidden' : piece.side}`}>
+              {pieceImage ? <img src={pieceImage} alt="" aria-hidden="true" /> : null}
+              <span className="flip-piece-label" data-label={piece.hidden ? '暗' : piece.label}>
+                {piece.hidden ? '暗' : piece.label}
+              </span>
+            </span>
+          ) : (
+            <span className="flip-empty-point" aria-hidden="true" />
+          )}
         </button>
         );
       })}
@@ -3106,11 +4253,17 @@ function FlipBoard({
   );
 }
 
+function getFlipPieceImage(piece?: XiangqiFlipChessPiece) {
+  if (!piece) return null;
+  if (piece.hidden) return jieqiBackPiece;
+  return generatedPieceImages[piece.side][flipPieceKindMap[piece.kind]];
+}
+
 function MoreGamesLobbyScreen({
   onOpenGame,
   onUnavailable,
 }: {
-  onOpenGame: () => void;
+  onOpenGame: (gameKind: MoreGameKind) => void;
   onUnavailable: (message: string, kind?: ToastKind) => void;
 }) {
   const posterStyle = (image: string): PosterCardStyle => ({
@@ -3124,8 +4277,8 @@ function MoreGamesLobbyScreen({
         role="button"
         tabIndex={0}
         style={posterStyle(gobangPoster)}
-        onClick={onOpenGame}
-        onKeyDown={(event) => event.key === 'Enter' && onOpenGame()}
+        onClick={() => onOpenGame('gobang')}
+        onKeyDown={(event) => (event.key === 'Enter' || event.key === ' ') && onOpenGame('gobang')}
       >
         <div className="more-card-copy">
           <strong>欢乐五子棋</strong>
@@ -3134,7 +4287,7 @@ function MoreGamesLobbyScreen({
       </div>
 
       <div className="more-card-grid">
-        <button className="more-card more-card-small flip-poster" style={posterStyle(flipChessPoster)} onClick={onOpenGame}>
+        <button className="more-card more-card-small flip-poster" style={posterStyle(flipChessPoster)} onClick={() => onOpenGame('flip')}>
           <span className="more-card-copy">
             <strong>翻翻棋</strong>
             <small>2269</small>
@@ -3156,38 +4309,13 @@ function MoreGamesLobbyScreen({
 }
 
 function FlipRulesDialog({ onClose }: { onClose: () => void }) {
-  const placeholder = getFlipChessSafePlaceholder('share');
   return (
     <div className="modal-layer" role="dialog" aria-modal="true">
-      <div className="confirm-card">
-        <p className="eyebrow">翻翻棋规则</p>
-        <h2>翻子与倍率</h2>
-        <div className="intro-rules">
-          {getFlipChessArenaRows('training').map((row) => (
-            <InfoRow title={row.title} detail={row.detail} key={row.title} />
-          ))}
-          <InfoRow title={placeholder.title} detail={placeholder.message} />
-        </div>
-        <button className="primary-action full-width" onClick={onClose}>知道了</button>
-      </div>
-    </div>
-  );
-}
-
-function FlipExitDialog({ onCancel, onConfirm }: { onCancel: () => void; onConfirm: () => void }) {
-  return (
-    <div className="modal-layer" role="dialog" aria-modal="true">
-      <div className="confirm-card">
-        <p className="eyebrow">强退确认</p>
-        <h2>退出翻翻棋？</h2>
-        <span>{getFlipChessSafePlaceholder('force-exit-timeout').message}</span>
-        <div className="result-actions">
-          <button onClick={onCancel}>继续</button>
-          <button className="primary-action" onClick={onConfirm}>
-            <RotateCcw size={18} />
-            确认
-          </button>
-        </div>
+      <div className="flip-rules-card">
+        <button className="round-button" aria-label="关闭翻翻棋规则" onClick={onClose} type="button">
+          <X size={18} />
+        </button>
+        <img src={flipRulesGuide} alt="翻翻棋规则：棋子大小、兵卒吃将帅、炮隔子吃子、同级互吃、吃子扣血" />
       </div>
     </div>
   );
@@ -3286,6 +4414,7 @@ function FeatureActionDialog({
   selectedMinuteMode,
   selectedHuashanMode,
   selectedFriendMode,
+  selectedXiangqiDifficulty,
   kifuRecords,
   selectedKifuId,
   onClose,
@@ -3299,6 +4428,7 @@ function FeatureActionDialog({
   selectedMinuteMode: XiangqiMinuteArenaMode;
   selectedHuashanMode: XiangqiHuashanMode;
   selectedFriendMode: XiangqiFriendRoomMode;
+  selectedXiangqiDifficulty: XiangqiAiDifficulty;
   kifuRecords: XiangqiKifuRecord[];
   selectedKifuId: string | null;
   onClose: () => void;
@@ -3313,6 +4443,7 @@ function FeatureActionDialog({
     selectedMinuteMode,
     selectedHuashanMode,
     selectedFriendMode,
+    selectedXiangqiDifficulty,
     kifuRecords,
     selectedKifuId,
   );
@@ -3486,6 +4617,7 @@ function getFeatureDialogContent(
   selectedMinuteMode: XiangqiMinuteArenaMode,
   selectedHuashanMode: XiangqiHuashanMode,
   selectedFriendMode: XiangqiFriendRoomMode,
+  selectedXiangqiDifficulty: XiangqiAiDifficulty,
   kifuRecords: XiangqiKifuRecord[],
   selectedKifuId: string | null,
 ): FeatureDialogContent {
@@ -3669,6 +4801,45 @@ function getFeatureDialogContent(
       };
     }
 
+    if (state.entryId === 'ai-match') {
+      const selected = getXiangqiAiDifficultyOption(selectedXiangqiDifficulty);
+      return {
+        title: '人机对战',
+        description: '选择适合自己的电脑难度，再进入本地练习局。',
+        cta: `挑战${selected.label}人机`,
+        resources: [
+          { label: '当前难度', value: selected.label, tone: 'gold' },
+          { label: '结算', value: '不计积分', tone: 'silver' },
+        ],
+        showcase: {
+          eyebrow: '难度选择',
+          title: `${selected.label}人机`,
+          detail: selected.detail,
+          progress: selected.id === 'beginner' ? 35 : selected.id === 'advanced' ? 68 : 100,
+        },
+        rows: [
+          { title: '局时', detail: '10分钟' },
+          { title: '步时', detail: '前3步30秒，之后90秒' },
+          { title: '当前对手', detail: selected.rival },
+          { title: '引擎策略', detail: selected.id === 'beginner' ? '本地轻量 AI' : selected.id === 'advanced' ? '短时强引擎' : '长考强引擎' },
+        ],
+        cards: xiangqiAiDifficultyOptions.map((option) => ({
+          id: option.id,
+          title: option.label,
+          detail: option.detail,
+          meta: option.rival,
+          badge: option.id === selectedXiangqiDifficulty ? '当前' : option.badge,
+          selected: option.id === selectedXiangqiDifficulty,
+        })),
+        tips: [
+          '入门难度会关闭强引擎，只用轻量本地 AI 陪练。',
+          '进阶难度会缩短思考时间，适合多数练习局。',
+          '高手难度会给强引擎更长思考时间。',
+        ],
+        risks: ['人机练习不计积分，不影响头衔和棋力认证。'],
+      };
+    }
+
     if (state.entryId === 'coin-arena') {
       const selection = buildCoinArenaSelection({ selectedRowId: selectedCoinRowId, wallet: defaultCoinArenaWallet });
       const session = getCoinArenaSession(selectedCoinRowId, defaultCoinArenaWallet);
@@ -3836,7 +5007,15 @@ function getFeatureDialogContent(
   };
 }
 
-function RankedScreen({ onStart, onBack, onHelp }: { onStart: () => void; onBack: () => void; onHelp: () => void }) {
+function RankedScreen({
+  onStart,
+  onBack,
+  onHelp,
+}: {
+  onStart: (selection: RankedStartSelection) => void;
+  onBack: () => void;
+  onHelp: () => void;
+}) {
   const [openMenu, setOpenMenu] = useState<RankedMenu>(null);
   const [selectedGame, setSelectedGame] = useState(rankedGameOptions[0]);
   const [selectedArena, setSelectedArena] = useState(rankedArenaOptions[0]);
@@ -3987,7 +5166,7 @@ function RankedScreen({ onStart, onBack, onHelp }: { onStart: () => void; onBack
         )}
       </div>
 
-      <button className="ranked-start-button" onClick={onStart}>
+      <button className="ranked-start-button" onClick={() => onStart({ game: selectedGame, arena: selectedArena })}>
         开始匹配
       </button>
       <div className="ranked-countdown">
@@ -4343,7 +5522,7 @@ function GameScreen({
         <ChessBoard
           pieces={game.pieces}
           selectedPiece={game.selectedPieceId ?? undefined}
-          marks={[...(moveHints ? game.legalMoves : []), ...recentMarks(game.recentMove)]}
+          marks={visibleGameLegalMarks(game, moveHints)}
           recentMove={game.recentMove}
           onSelectPoint={onSelectPoint}
         />
@@ -4779,6 +5958,7 @@ function GameIntroDialog({
               <InfoRow title="场次" detail={`${playSession.arenaTitle} · ${playSession.tableLabel}`} />
               <InfoRow title="局时" detail={playSession.timeLabel} />
               <InfoRow title="步时" detail={playSession.stepLabel} />
+              {playSession.matchMode === 'training' && <InfoRow title="难度" detail={playSession.arenaTitle} />}
               <InfoRow title="入场" detail={playSession.costLabel} />
               <InfoRow title="结算" detail={playSession.rewardLabel} />
             </div>
@@ -5287,13 +6467,21 @@ function ModeCard({ title, value }: { title: string; value: string }) {
   );
 }
 
-function GobangBoard({ board, onPoint }: { board: number[][]; onPoint: (x: number, y: number) => void }) {
+function GobangBoard({
+  board,
+  lastMove,
+  onPoint,
+}: {
+  board: number[][];
+  lastMove?: Position | null;
+  onPoint: (x: number, y: number) => void;
+}) {
   return (
     <div className="gobang-board" style={{ '--gobang-size': gobangSize } as CSSProperties}>
       {board.map((row, y) =>
         row.map((cell, x) => (
           <button
-            className={`gobang-cell ${cell === 1 ? 'is-black' : cell === 2 ? 'is-white' : ''}`}
+            className={`gobang-cell ${cell === 1 ? 'is-black' : cell === 2 ? 'is-white' : ''} ${lastMove?.x === x && lastMove.y === y ? 'is-last' : ''}`}
             aria-label={`五子棋 ${x + 1}-${y + 1}`}
             key={`${x}-${y}`}
             onClick={() => onPoint(x, y)}
@@ -5309,6 +6497,14 @@ function GobangBoard({ board, onPoint }: { board: number[][]; onPoint: (x: numbe
 
 function recentMarks(move: Move | null): Position[] {
   return move ? [move.from, move.to] : [];
+}
+
+function visibleGameLegalMarks(game: GameState, moveHints: boolean): Position[] {
+  if (!moveHints || game.phase !== 'playing' || game.turn !== 'red' || !game.selectedPieceId) return [];
+  const selected = findPiece(game.pieces, game.selectedPieceId);
+  if (!selected || selected.side !== 'red') return [];
+  const currentLegalMoves = getLegalMoves(game.pieces, selected);
+  return game.legalMoves.filter((move) => hasPoint(currentLegalMoves, move));
 }
 
 function pointStyle(point: Position, paddingPercent = BOARD_PADDING_PERCENT): CSSProperties {

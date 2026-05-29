@@ -17,6 +17,7 @@
   },
   "include": [
     "src/game.ts",
+    "src/xiangqiEngine.ts",
     "src/jieqi.ts",
     "src/jieqiLobby.ts",
     "src/puzzle.ts",

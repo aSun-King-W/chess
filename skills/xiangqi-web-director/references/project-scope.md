@@ -6,7 +6,9 @@
 - Use `React + TypeScript + Vite`; keep the first version pure frontend.
 - Make the first screen an actual usable game experience, not a landing page.
 - Preserve a complete local loop: home -> lobby -> matching -> game -> result -> replay or rematch.
-- Current baseline: the app shell, primary play pages, Xiangqi lobby, local match flow, game screen, result page, replay page, profile shell, and minimum puzzle/Jieqi/more-game mode surfaces are already implemented.
+- Current baseline: the app shell, primary play pages, Xiangqi lobby, local match flow, game screen, result page, replay page, profile shell, optional strong-AI path, and puzzle/Jieqi/more-game mode surfaces are already implemented.
+- Current visual baseline includes self-made/generated board, piece, Jieqi-back, campaign-map, Gobang-board, and mode artwork; keep these legible and avoid swapping in copied Tiantian Xiangqi assets.
+- Optional Pikafish WebAssembly assets are bundled under `public/engines/pikafish/`; they are GPL-3.0 and must remain documented as optional with local fallback.
 - Current V1.1 validation is recorded in `docs/v1.1-validation.md`; treat it as the latest stable baseline before starting a larger redesign.
 
 ## Explicit Non-Goals For Current Work
@@ -29,8 +31,9 @@
 2. Standard Xiangqi playable loop.
 3. Result and replay flow.
 4. Lobby density, page shells, and navigation polish.
-5. Puzzle, Jieqi, flip chess, and Gobang minimum playable modes.
-6. Visual and responsive validation.
+5. Puzzle campaign, Jieqi, flip chess, and Gobang local mode depth.
+6. Optional engine integration and graceful fallback.
+7. Visual and responsive validation.
 
 ## Skill Strategy
 

@@ -14,9 +14,11 @@ import {
   revealXiangqiPuzzleHint,
   startXiangqiPuzzleAttempt,
   tickXiangqiPuzzleAttempt,
+  undoXiangqiPuzzleAttemptStep,
   xiangqiPuzzleEntries,
 } from '../src/xiangqiPuzzle.js';
-import { dailyPuzzle } from '../src/puzzle.js';
+import { dailyPuzzle, getPuzzleLegalMoves } from '../src/puzzle.js';
+import type { Puzzle } from '../src/puzzle.js';
 
 type TestCase = {
   name: string;
@@ -77,8 +79,19 @@ const tests: TestCase[] = [
       let attempt = createXiangqiPuzzleAttempt('daily', { now: '2026-05-28T10:00:00.000Z' });
       attempt = startXiangqiPuzzleAttempt(attempt);
       attempt = tickXiangqiPuzzleAttempt(attempt, 41);
+      attempt = {
+        ...attempt,
+        session: {
+          ...attempt.session,
+          pieces: attempt.session.pieces
+            .filter((piece) => piece.id !== 'daily-br-center')
+            .map((piece) => (piece.id === 'daily-rr-center' ? { ...piece, x: 5, y: 4 } : piece)),
+        },
+      };
 
-      const result = applyXiangqiPuzzleAttemptMove(dailyPuzzle, attempt, { pieceId: 'pr', to: { x: 4, y: 0 } });
+      const result = applyXiangqiPuzzleAttemptMove(dailyPuzzle, attempt, { pieceId: 'daily-rr-center', to: { x: 5, y: 1 } }, undefined, {
+        autoReply: false,
+      });
       assert(result.verdict === 'success', 'solution should succeed');
       assert(result.attempt.status === 'solved', 'attempt should be solved');
       assert(result.attempt.session.steps === 1, 'steps should increment');
@@ -108,22 +121,58 @@ const tests: TestCase[] = [
     },
   },
   {
-    name: '错误合法路线会进入 impossible 并显示是否重来提示',
+    name: '每日自由残局未杀掉黑将时不会直接判错',
     run: () => {
       const attempt = startXiangqiPuzzleAttempt(createXiangqiPuzzleAttempt('daily'));
-      const result = applyXiangqiPuzzleAttemptMove(dailyPuzzle, attempt, { pieceId: 'pr', to: { x: 4, y: 7 } });
+      const result = applyXiangqiPuzzleAttemptMove(dailyPuzzle, attempt, { pieceId: 'daily-rr-center', to: { x: 4, y: 3 } }, undefined, {
+        autoReply: false,
+      });
 
-      assert(result.verdict === 'incorrect', 'wrong legal move should be incorrect');
-      assert(result.impossible, 'wrong daily route should be impossible');
-      assert(result.attempt.status === 'impossible', 'attempt status should be impossible');
-      assert(result.attempt.impossiblePrompt === '当前已无法过关，是否重来', 'restart prompt should match observation');
-      assert(result.message === '当前已无法过关，是否重来。', 'message should prompt restart');
-      assert(result.expected?.to.x === 4 && result.expected.to.y === 0, 'expected solution should be exposed');
+      assert(result.verdict === 'correct', 'legal non-winning move should continue');
+      assert(!result.impossible, 'daily free mate should not become impossible on a non-winning move');
+      assert(result.attempt.status === 'playing', 'attempt should keep playing');
+      assert(result.attempt.session.turn === 'black', 'black should move after red does not win');
+      assert(result.message.includes('黑方应手'), 'message should mention black response');
+      assert(getXiangqiPuzzleMenuActions(result.attempt).join('/') === '退出/重来/设置', 'playing menu actions');
+    },
+  },
+  {
+    name: '多手闯关会自动走出黑方应手并把提示推进到红方下一手',
+    run: () => {
+      const puzzle: Puzzle = {
+        id: 'auto-reply-training',
+        title: '自动应手训练',
+        pieces: [
+          { id: 'rk', side: 'red', kind: 'king', label: '帥', x: 4, y: 9 },
+          { id: 'bk', side: 'black', kind: 'king', label: '將', x: 5, y: 0 },
+          { id: 'rr', side: 'red', kind: 'rook', label: '車', x: 0, y: 8 },
+          { id: 'bp', side: 'black', kind: 'pawn', label: '卒', x: 1, y: 3 },
+        ],
+        sideToMove: 'red',
+        goal: { type: 'solution-line', description: '红走一步后黑方自动应手' },
+        hints: [
+          {
+            moveIndex: 2,
+            title: '红方继续',
+            target: { x: 0, y: 6 },
+            arrow: { from: { x: 0, y: 7 }, to: { x: 0, y: 6 } },
+          },
+        ],
+        solutionLine: [
+          { pieceId: 'rr', from: { x: 0, y: 8 }, to: { x: 0, y: 7 }, note: '车九进一' },
+          { pieceId: 'bp', from: { x: 1, y: 3 }, to: { x: 1, y: 4 }, note: '卒二进一' },
+          { pieceId: 'rr', from: { x: 0, y: 7 }, to: { x: 0, y: 6 }, note: '车九进一' },
+        ],
+        stats: { challengeCount: 1, passRate: 1, fastestSeconds: 8, commentCount: 0 },
+      };
+      const attempt = startXiangqiPuzzleAttempt(createXiangqiPuzzleAttempt('campaign', { puzzle }));
+      const first = applyXiangqiPuzzleAttemptMove(puzzle, attempt, { pieceId: 'rr', to: { x: 0, y: 7 } });
 
-      const blocked = applyXiangqiPuzzleAttemptMove(dailyPuzzle, result.attempt, { pieceId: 'pr', to: { x: 4, y: 0 } });
-      assert(blocked.verdict === 'blocked', 'impossible attempts should block further moves');
-      assert(blocked.message.includes('重来'), 'blocked message should mention restart');
-      assert(getXiangqiPuzzleMenuActions(result.attempt).join('/') === '退出/重来/设置', 'impossible menu actions');
+      assert(first.verdict === 'correct', 'first red move should remain correct after auto reply');
+      assert(first.attempt.session.steps === 2, 'black reply should be auto-applied and counted');
+      assert(first.attempt.session.turn === 'red', 'turn should return to red after black reply');
+      assert(first.attempt.session.progressIndex === 2, 'progress should skip the known black response');
+      assert(first.message.includes('对方已应'), 'message should explain the auto reply');
     },
   },
   {
@@ -133,20 +182,49 @@ const tests: TestCase[] = [
 
       const first = revealXiangqiPuzzleHint(dailyPuzzle, attempt);
       assert(first.consumed, 'first hint should consume');
-      assert(first.hint?.title === '红车进一将军', 'hint title');
+      assert(first.hint?.title === '车吃中士', 'hint title');
       assert(first.attempt.resources.hintCards === 2, 'resource hint card should decrease');
       assert(first.attempt.session.hintsUsed === 1, 'session hint usage');
-      assert(first.message === '提示：红车进一将军', 'hint message');
+      assert(first.message === '提示：车吃中士', 'hint message');
 
       const second = revealXiangqiPuzzleHint(dailyPuzzle, first.attempt);
       assert(!second.consumed, 'same hint should not consume twice');
       assert(second.attempt.resources.hintCards === 2, 'resource hint cards stable');
       assert(second.attempt.session.hintsUsed === 1, 'session hint usage stable');
+    },
+  },
+  {
+    name: '悔棋按当前轮次回退而不是重开整局',
+    run: () => {
+      let attempt = startXiangqiPuzzleAttempt(createXiangqiPuzzleAttempt('daily'));
+      attempt = applyXiangqiPuzzleAttemptMove(dailyPuzzle, attempt, { pieceId: 'daily-rr-center', to: { x: 4, y: 3 } }, undefined, {
+        autoReply: false,
+      }).attempt;
 
-      attempt = applyXiangqiPuzzleAttemptMove(dailyPuzzle, second.attempt, { pieceId: 'pr', to: { x: 4, y: 7 } }).attempt;
-      const impossibleHint = revealXiangqiPuzzleHint(dailyPuzzle, attempt);
-      assert(!impossibleHint.consumed, 'impossible route should not consume hint');
-      assert(impossibleHint.message.includes('重来'), 'impossible hint should ask restart');
+      const undone = undoXiangqiPuzzleAttemptStep(dailyPuzzle, attempt, '2026-05-28T10:02:00.000Z');
+      assert(undone.status === 'playing', 'undo should keep the attempt playable');
+      assert(undone.session.steps === 0, 'undo should remove one recorded step');
+      assert(undone.session.turn === 'red', 'turn should return to red after undoing red move');
+      assert(undone.session.moveHistory.length === 0, 'move history should lose only the latest move');
+      assert(undone.undos === 1, 'undo count should increment');
+      assert(undone.restarts === 0, 'undo should not count as a restart');
+
+      let roundAttempt = startXiangqiPuzzleAttempt(createXiangqiPuzzleAttempt('daily'));
+      roundAttempt = applyXiangqiPuzzleAttemptMove(dailyPuzzle, roundAttempt, { pieceId: 'daily-rr-center', to: { x: 4, y: 3 } }, undefined, {
+        autoReply: false,
+      }).attempt;
+      const blackReply = roundAttempt.session.pieces
+        .filter((piece) => piece.side === 'black')
+        .flatMap((piece) => getPuzzleLegalMoves(roundAttempt.session, piece.id).map((to) => ({ pieceId: piece.id, to })))[0];
+      assert(blackReply, 'black should have a legal reply in this position');
+      roundAttempt = applyXiangqiPuzzleAttemptMove(dailyPuzzle, roundAttempt, blackReply, undefined, {
+        autoReply: false,
+      }).attempt;
+
+      const roundUndone = undoXiangqiPuzzleAttemptStep(dailyPuzzle, roundAttempt, '2026-05-28T10:03:00.000Z');
+      assert(roundUndone.session.steps === 0, 'undo should remove the player move and the black reply');
+      assert(roundUndone.session.turn === 'red', 'turn should return to red after undoing a full round');
+      assert(roundUndone.session.moveHistory.length === 0, 'full-round undo should clear both moves');
     },
   },
   {
@@ -155,7 +233,9 @@ const tests: TestCase[] = [
       let attempt = startXiangqiPuzzleAttempt(createXiangqiPuzzleAttempt('daily'));
       attempt = tickXiangqiPuzzleAttempt(attempt, 12);
       attempt = revealXiangqiPuzzleHint(dailyPuzzle, attempt).attempt;
-      attempt = applyXiangqiPuzzleAttemptMove(dailyPuzzle, attempt, { pieceId: 'pr', to: { x: 4, y: 7 } }).attempt;
+      attempt = applyXiangqiPuzzleAttemptMove(dailyPuzzle, attempt, { pieceId: 'daily-rr-center', to: { x: 4, y: 3 } }, undefined, {
+        autoReply: false,
+      }).attempt;
 
       const restarted = restartXiangqiPuzzleAttempt(dailyPuzzle, attempt, '2026-05-28T10:02:00.000Z');
       assert(restarted.status === 'playing', 'restart should return to playing');

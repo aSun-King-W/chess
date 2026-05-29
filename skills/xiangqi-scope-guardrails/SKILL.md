@@ -13,6 +13,7 @@ Use this skill when scope might drift beyond the current web-first project.
 - Pure frontend first.
 - Local play first.
 - Self-made or generic visual assets only.
+- Optional third-party engine assets must stay documented, license-aware, and replaceable by local fallback.
 - Skills remain repository-local drafts until final consolidation.
 - Xiangqi skills should not trigger for non-Xiangqi projects.
 
@@ -26,6 +27,8 @@ Use this skill when scope might drift beyond the current web-first project.
 - Real online matchmaking, friend rooms, spectators, chat service, or WebSocket rooms.
 - Ranking sync, social graph, cloud replay storage, or activity backend.
 - Copying original Tiantian Xiangqi images, trademarks, sounds, protected layouts, or proprietary assets.
+- Treating bundled GPL engine assets as proprietary, undisclosed, or required for basic gameplay.
+- Turning local coin arena, minute arena, Huashan, friend-room, certification, or rating shells into real commercial/social/event services without explicit scope.
 
 ## Do Not Trigger For
 

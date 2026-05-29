@@ -47,11 +47,11 @@ function piece(
 ): XiangqiFlipChessPiece {
   const defaults: Record<XiangqiFlipChessPieceKind, Pick<XiangqiFlipChessPiece, 'rank' | 'damage' | 'flipMultiplier'>> = {
     general: { rank: 7, damage: 14, flipMultiplier: 6 },
-    advisor: { rank: 2, damage: 5, flipMultiplier: 2 },
-    elephant: { rank: 3, damage: 6, flipMultiplier: 3 },
-    horse: { rank: 5, damage: 8, flipMultiplier: 4 },
-    rook: { rank: 6, damage: 10, flipMultiplier: 5 },
-    cannon: { rank: 4, damage: 8, flipMultiplier: 4 },
+    advisor: { rank: 6, damage: 5, flipMultiplier: 2 },
+    elephant: { rank: 5, damage: 6, flipMultiplier: 3 },
+    rook: { rank: 4, damage: 10, flipMultiplier: 5 },
+    horse: { rank: 3, damage: 8, flipMultiplier: 4 },
+    cannon: { rank: 2, damage: 8, flipMultiplier: 4 },
     pawn: { rank: 1, damage: 4, flipMultiplier: 2 },
   };
 
@@ -167,11 +167,12 @@ const tests: TestCase[] = [
       assert(captured.multiplier === 19, 'capture multiplier');
       assert(captured.capturedBy.red.length === 1, 'red trophy count');
       assert(trophies.red[0].label === '卒' && trophies.red[0].count === 1, 'red trophy stack');
+      assert(trophies.red[0].side === 'black', 'trophy stack keeps captured side');
       assert(captured.records[captured.records.length - 1].notation.includes('扣4血'), 'damage notation');
     },
   },
   {
-    name: '翻翻棋吃子规则包含兵吃将炮隔山和将不能吃兵',
+    name: '翻翻棋吃子规则包含士大于象同级互吃兵吃将炮隔山和将不能吃兵',
     run: () => {
       const base = chooseFlipChessOpening(createFlipChessGame({
         arenaId: 'training',
@@ -183,12 +184,36 @@ const tests: TestCase[] = [
           piece('red-cannon', 'red', 'cannon', '炮', 'f2-0'),
           piece('screen', 'black', 'horse', '马', 'f2-1'),
           piece('black-rook', 'black', 'rook', '车', 'f2-3'),
+          piece('red-advisor', 'red', 'advisor', '仕', 'f3-0'),
+          piece('black-elephant', 'black', 'elephant', '象', 'f3-1'),
+          piece('red-elephant', 'red', 'elephant', '相', 'f3-2'),
+          piece('red-cannon-own', 'red', 'cannon', '炮', 'f4-0'),
+          piece('own-screen', 'black', 'horse', '马', 'f4-1'),
+          piece('own-target', 'red', 'advisor', '仕', 'f4-2'),
+          piece('red-cannon-hidden', 'red', 'cannon', '炮', 'f5-0'),
+          piece('hidden-screen', 'red', 'pawn', '兵', 'f5-1'),
+          piece('hidden-target', 'black', 'rook', '车', 'f5-2', { hidden: true }),
         ],
       }), 'claim-red');
+      const find = (id: string) => {
+        const found = base.pieces.find((item) => item.id === id);
+        assert(found, `${id} should exist`);
+        return found;
+      };
 
       assert(!canFlipChessPieceCapture(base, base.pieces[0], base.pieces[1]), 'general cannot capture pawn');
       assert(canFlipChessPieceCapture(base, base.pieces[2], base.pieces[3]), 'pawn can capture general');
       assert(canFlipChessPieceCapture(base, base.pieces[4], base.pieces[6]), 'cannon captures with one screen');
+      assert(canFlipChessPieceCapture(base, base.pieces[7], base.pieces[8]), 'advisor should capture elephant');
+      assert(canFlipChessPieceCapture(base, base.pieces[9], base.pieces[8]), 'elephants of same rank should capture each other');
+      assert(canFlipChessPieceCapture(base, find('red-cannon-own'), find('own-target')), 'cannon can capture own piece over one screen');
+      assert(canFlipChessPieceCapture(base, find('red-cannon-hidden'), find('hidden-target')), 'cannon can capture hidden target over one screen');
+
+      const ownCaptured = captureFlipChessPiece(base, 'red-cannon-own', 'f4-2');
+      assert(ownCaptured.redHp === 55, 'capturing own piece deducts own hp');
+      assert(ownCaptured.records[ownCaptured.records.length - 1].notation.includes('红方扣5血'), 'own capture notation deducts target side');
+      const hiddenCaptured = captureFlipChessPiece(base, 'red-cannon-hidden', 'f5-2');
+      assert(hiddenCaptured.records[hiddenCaptured.records.length - 1].notation.includes('吃黑方车'), 'hidden target capture reveals side in notation');
     },
   },
   {

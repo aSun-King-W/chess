@@ -1,4 +1,4 @@
-import { dailyPuzzle } from './puzzle.js';
+import { campaignPuzzles, dailyPuzzle } from './puzzle.js';
 import type { Puzzle, PuzzleSession } from './puzzle.js';
 
 export type PuzzleFeatureEntryKind =
@@ -119,11 +119,11 @@ export type PuzzleDashboardStats = {
 
 const localPuzzleIds = {
   daily: dailyPuzzle.id,
-  forkTrap: 'local-fork-trap-001',
-  cannonNet: 'local-cannon-net-002',
-  rookMate: 'local-rook-mate-003',
-  palacePin: 'local-palace-pin-004',
-  endgameSprint: 'local-endgame-sprint-005',
+  forkTrap: campaignPuzzles[2]?.id ?? 'campaign-003-horse-corner-shot',
+  cannonNet: campaignPuzzles[8]?.id ?? 'campaign-009-horse-cannon-net',
+  rookMate: campaignPuzzles[4]?.id ?? 'campaign-005-rook-river-post',
+  palacePin: campaignPuzzles[7]?.id ?? 'campaign-008-cannon-palace-pin',
+  endgameSprint: campaignPuzzles[15]?.id ?? 'campaign-016-final-gate',
 };
 
 export const puzzleTrainingSets: PuzzleTrainingSet[] = [
@@ -142,7 +142,7 @@ export const puzzleTrainingSets: PuzzleTrainingSet[] = [
     title: '残局闯关',
     kind: 'campaign',
     description: '从一手杀到多步定式的本地闯关路线。',
-    puzzleIds: [dailyPuzzle.id, localPuzzleIds.forkTrap, localPuzzleIds.cannonNet, localPuzzleIds.endgameSprint],
+    puzzleIds: campaignPuzzles.map((puzzle) => puzzle.id),
     estimatedMinutes: 12,
     difficulty: 3,
     tags: ['闯关', '进阶', '连胜'],

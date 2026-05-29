@@ -198,16 +198,16 @@ const pieceBlueprints: Array<{
 }> = [
   { side: 'red', kind: 'general', label: '帅', rank: 7, damage: 14, flipMultiplier: 6, count: 1 },
   { side: 'black', kind: 'general', label: '将', rank: 7, damage: 14, flipMultiplier: 6, count: 1 },
-  { side: 'red', kind: 'rook', label: '车', rank: 6, damage: 10, flipMultiplier: 5, count: 2 },
-  { side: 'black', kind: 'rook', label: '车', rank: 6, damage: 10, flipMultiplier: 5, count: 2 },
-  { side: 'red', kind: 'horse', label: '马', rank: 5, damage: 8, flipMultiplier: 4, count: 2 },
-  { side: 'black', kind: 'horse', label: '马', rank: 5, damage: 8, flipMultiplier: 4, count: 2 },
-  { side: 'red', kind: 'cannon', label: '炮', rank: 4, damage: 8, flipMultiplier: 4, count: 2 },
-  { side: 'black', kind: 'cannon', label: '炮', rank: 4, damage: 8, flipMultiplier: 4, count: 2 },
-  { side: 'red', kind: 'elephant', label: '相', rank: 3, damage: 6, flipMultiplier: 3, count: 2 },
-  { side: 'black', kind: 'elephant', label: '象', rank: 3, damage: 6, flipMultiplier: 3, count: 2 },
-  { side: 'red', kind: 'advisor', label: '仕', rank: 2, damage: 5, flipMultiplier: 2, count: 2 },
-  { side: 'black', kind: 'advisor', label: '士', rank: 2, damage: 5, flipMultiplier: 2, count: 2 },
+  { side: 'red', kind: 'advisor', label: '仕', rank: 6, damage: 5, flipMultiplier: 2, count: 2 },
+  { side: 'black', kind: 'advisor', label: '士', rank: 6, damage: 5, flipMultiplier: 2, count: 2 },
+  { side: 'red', kind: 'elephant', label: '相', rank: 5, damage: 6, flipMultiplier: 3, count: 2 },
+  { side: 'black', kind: 'elephant', label: '象', rank: 5, damage: 6, flipMultiplier: 3, count: 2 },
+  { side: 'red', kind: 'rook', label: '车', rank: 4, damage: 10, flipMultiplier: 5, count: 2 },
+  { side: 'black', kind: 'rook', label: '车', rank: 4, damage: 10, flipMultiplier: 5, count: 2 },
+  { side: 'red', kind: 'horse', label: '马', rank: 3, damage: 8, flipMultiplier: 4, count: 2 },
+  { side: 'black', kind: 'horse', label: '马', rank: 3, damage: 8, flipMultiplier: 4, count: 2 },
+  { side: 'red', kind: 'cannon', label: '炮', rank: 2, damage: 8, flipMultiplier: 4, count: 2 },
+  { side: 'black', kind: 'cannon', label: '炮', rank: 2, damage: 8, flipMultiplier: 4, count: 2 },
   { side: 'red', kind: 'pawn', label: '兵', rank: 1, damage: 4, flipMultiplier: 2, count: 5 },
   { side: 'black', kind: 'pawn', label: '卒', rank: 1, damage: 4, flipMultiplier: 2, count: 5 },
 ];
@@ -303,6 +303,16 @@ export function chooseFlipChessOpening(
   });
 }
 
+export function previewFlipChessOpening(state: XiangqiFlipChessGameState, cellIds: string[]): XiangqiFlipChessGameState {
+  ensurePhase(state, 'red-choice');
+  const previewCells = new Set(cellIds);
+  const next = cloneState(state);
+  next.pieces = next.pieces.map((piece) => (
+    previewCells.has(piece.cellId) && !piece.captured ? { ...piece, hidden: false } : piece
+  ));
+  return next;
+}
+
 export function flipFlipChessPiece(state: XiangqiFlipChessGameState, cellId: string): XiangqiFlipChessGameState {
   ensurePlaying(state);
   const piece = getActivePieceAt(state, cellId);
@@ -360,13 +370,13 @@ export function captureFlipChessPiece(
   if (!attacker) throw new Error(`Unknown flip chess piece: ${attackerId}`);
   if (!target) throw new Error(`No target at ${targetCellId}`);
   if (!canFlipChessPieceCapture(state, attacker, target)) {
-    throw new Error(`${attacker.label} cannot capture ${target.label}`);
+    throw new Error(`${attacker.label}不能吃${target.label}`);
   }
 
   const combo = state.consecutiveCaptures[attacker.side] + 1;
   const damage = target.damage + Math.max(0, combo - 1) * 2;
   const next = cloneState(state);
-  const targetHpKey = attacker.side === 'red' ? 'blackHp' : 'redHp';
+  const targetHpKey = target.side === 'red' ? 'redHp' : 'blackHp';
   next[targetHpKey] = Math.max(0, next[targetHpKey] - damage);
   next.multiplier = clampMultiplier(next.multiplier + target.flipMultiplier + combo, next.arena.maxMultiplier);
   next.moveNumber += 1;
@@ -387,7 +397,7 @@ export function captureFlipChessPiece(
   return appendRecord(afterFinish, {
     type: afterFinish.phase === 'finished' ? 'finish' : 'capture',
     side: attacker.side,
-    notation: `${sideLabel(attacker.side)}${attacker.label}吃${sideLabel(target.side)}${target.label}，${sideLabel(oppositeSide(attacker.side))}扣${damage}血`,
+    notation: `${sideLabel(attacker.side)}${attacker.label}吃${sideLabel(target.side)}${target.label}，${sideLabel(target.side)}扣${damage}血`,
   });
 }
 
@@ -397,13 +407,14 @@ export function canFlipChessPieceCapture(
   target: XiangqiFlipChessPiece,
 ): boolean {
   if (state.phase !== 'playing') return false;
-  if (attacker.hidden || target.hidden || attacker.captured || target.captured) return false;
-  if (attacker.side !== state.turnSide || attacker.side === target.side) return false;
+  if (attacker.hidden || attacker.captured || target.captured) return false;
+  if (attacker.side !== state.turnSide) return false;
 
   if (attacker.kind === 'cannon') {
     return countScreensBetween(state, attacker.cellId, target.cellId) === 1;
   }
 
+  if (target.hidden || attacker.side === target.side) return false;
   if (!isAdjacentCell(attacker.cellId, target.cellId)) return false;
   if (attacker.kind === 'pawn' && target.kind === 'general') return true;
   if (attacker.kind === 'general' && target.kind === 'pawn') return false;
@@ -412,8 +423,8 @@ export function canFlipChessPieceCapture(
 
 export function getFlipChessTrophySidebar(state: XiangqiFlipChessGameState): Record<XiangqiFlipChessSide, XiangqiFlipChessTrophyStack[]> {
   return {
-    red: buildTrophyStacks('red', state.capturedBy.red),
-    black: buildTrophyStacks('black', state.capturedBy.black),
+    red: buildTrophyStacks(state.capturedBy.red),
+    black: buildTrophyStacks(state.capturedBy.black),
   };
 }
 
@@ -437,7 +448,7 @@ export function createFlipChessSettlement(
     coinDelta,
     balanceAfter,
     summary: winnerSide
-      ? `胜利，银币 ${coinDelta >= 0 ? '+' : ''}${coinDelta}`
+      ? `${winnerSide === playerSide ? '胜利' : '失败'}，银币 ${coinDelta >= 0 ? '+' : ''}${coinDelta}`
       : '本局尚未产生胜负，暂不结算银币。',
     rows: [
       { title: '场次', detail: state.arena.title },
@@ -635,7 +646,7 @@ function finishIfNeeded(state: XiangqiFlipChessGameState): XiangqiFlipChessGameS
   };
 }
 
-function buildTrophyStacks(side: XiangqiFlipChessSide, pieces: XiangqiFlipChessPiece[]): XiangqiFlipChessTrophyStack[] {
+function buildTrophyStacks(pieces: XiangqiFlipChessPiece[]): XiangqiFlipChessTrophyStack[] {
   const groups = new Map<string, XiangqiFlipChessPiece[]>();
   pieces.forEach((piece) => {
     const key = `${piece.side}-${piece.kind}`;
@@ -643,7 +654,7 @@ function buildTrophyStacks(side: XiangqiFlipChessSide, pieces: XiangqiFlipChessP
   });
 
   return [...groups.values()].map((group) => ({
-    side,
+    side: group[0].side,
     label: group[0].label,
     count: group.length,
     pieces: group.map((piece) => ({ label: piece.label, kind: piece.kind })),

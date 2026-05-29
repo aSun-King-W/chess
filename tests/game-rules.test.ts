@@ -3,6 +3,7 @@ import {
   buildReplayPieces,
   canUndoRound,
   chooseAiMove,
+  chooseGobangMove,
   createGobangBoard,
   createInitialGame,
   finishGame,
@@ -327,6 +328,20 @@ const tests: TestCase[] = [
       board = createGobangBoard();
       for (let index = 0; index < 5; index += 1) board = placeStone(board, index + 1, index + 1, 2);
       assert(hasGobangWin(board, 2), 'diagonal five should win');
+    },
+  },
+  {
+    name: '五子棋 AI 优先成五并拦截对手成五',
+    run: () => {
+      let board = createGobangBoard();
+      for (let x = 4; x <= 7; x += 1) board = placeStone(board, x, 7, 2);
+      let move = chooseGobangMove(board, 7, 7);
+      assert(move?.x === 3 || move?.x === 8, 'AI should complete its open four');
+
+      board = createGobangBoard();
+      for (let y = 3; y <= 6; y += 1) board = placeStone(board, 8, y, 1);
+      move = chooseGobangMove(board, 8, 6);
+      assert(move?.x === 8 && (move.y === 2 || move.y === 7), 'AI should block the player open four');
     },
   },
 ];
